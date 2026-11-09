@@ -9,9 +9,9 @@ use anyhow::{anyhow, Result};
 use dbsp::circuit::{
     CircuitConfig, CircuitStorageConfig, StorageCacheConfig, StorageConfig, StorageOptions,
 };
-use dbsp::{DBSPHandle, OrdZSet, OutputHandle, RootCircuit, Runtime, Stream, ZSetHandle, ZWeight};
-use dbsp::utils::Tup2;
 use dbsp::typed_batch::{IndexedZSetReader, SpineSnapshot};
+use dbsp::utils::Tup2;
+use dbsp::{DBSPHandle, OrdZSet, OutputHandle, RootCircuit, Runtime, Stream, ZSetHandle, ZWeight};
 use edn::query::Variable;
 
 pub(super) use aggregates::AggregateError;

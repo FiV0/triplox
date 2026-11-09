@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use dbsp::{PoolConfig, RuntimePool};
-use slatedb::object_store::ObjectStore;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -119,29 +118,24 @@ enum IncrementalCommand {
         handle: IncrementalQueryHandle,
         response: oneshot::Sender<Result<()>>,
     },
-    ApplyBatch {
-        batch: Arc<Batch>,
-        response: oneshot::Sender<()>,
-    },
     Shutdown {
         response: oneshot::Sender<Result<()>>,
     },
 }
 
-#[derive(Clone)]
+// A batch from the CDC task. The dispatcher answers once it has routed the batch.
+pub(crate) struct CdcBatch {
+    batch: Arc<Batch>,
+    routed: oneshot::Sender<()>,
+}
+
+// The service owns the CDC task, so the dispatcher stops once the commands channel closes.
 pub(crate) struct IncrementalQueryService {
     commands: mpsc::UnboundedSender<IncrementalCommand>,
     indexer: Arc<RwLock<Indexer>>,
     retire_timeout: Duration,
-}
-
-// What the CDC task reads, and how often it polls the WAL.
-struct CdcSource {
-    object_path: String,
-    object_store: Arc<dyn ObjectStore>,
-    poll_interval: Duration,
-    // A weak sender, so the dispatcher stops when the last service handle drops.
-    commands: mpsc::WeakUnboundedSender<IncrementalCommand>,
+    cdc_cancel: CancellationToken,
+    cdc_task: Option<JoinHandle<Result<()>>>,
 }
 
 // Starts on a blocking thread, as the pool spawns its DBSP worker and merger threads.
@@ -157,6 +151,25 @@ async fn start_pool(config: IncrementalConfig) -> Result<RuntimePool> {
     .await
     .context("Incremental runtime pool startup task panicked")?
     .context("Incremental runtime pool failed to start")
+}
+
+async fn join_cdc(task: Option<JoinHandle<Result<()>>>) -> Result<()> {
+    let Some(task) = task else {
+        return Ok(());
+    };
+    task.await
+        .context("Incremental query CDC task failed to join")?
+        .context("Incremental query CDC loop failed")
+}
+
+fn shutdown_result(cdc_result: Result<()>, cleanup: Result<()>) -> Result<()> {
+    match (cdc_result, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(cdc_error), Err(cleanup_error)) => Err(cdc_error.context(format!(
+            "Incremental query service shutdown failed: {cleanup_error:#}"
+        ))),
+    }
 }
 
 // The two result levels in this service have two different meanings.
@@ -201,6 +214,38 @@ impl IncrementalQueryService {
     }
 
     // Spawns the dispatcher on the current Tokio runtime, so this must run inside one.
+    // The dispatcher routes the batches sent on the returned sender.
+    async fn new_without_cdc(
+        storage_root: PathBuf,
+        cancel: &CancellationToken,
+        db: Arc<slatedb::Db>,
+        indexer: Arc<RwLock<Indexer>>,
+        options: IncrementalQueryOptions,
+    ) -> Result<(Self, mpsc::UnboundedSender<CdcBatch>)> {
+        let pool = start_pool(options.config).await?;
+        let (commands, command_receiver) = mpsc::unbounded_channel();
+        let (batches, batch_receiver) = mpsc::unbounded_channel();
+        let inner = IncrementalQueryServiceInner::new(
+            pool,
+            storage_root,
+            cancel.child_token(),
+            options,
+            db,
+            indexer.clone(),
+        );
+        tokio::spawn(inner.run(command_receiver, batch_receiver));
+
+        let service = Self {
+            commands,
+            indexer,
+            retire_timeout: options.retire_timeout,
+            cdc_cancel: cancel.child_token(),
+            cdc_task: None,
+        };
+        Ok((service, batches))
+    }
+
+    // The CDC task starts with the service and reads the WAL from its beginning.
     async fn new_with_options(
         storage_root: PathBuf,
         cancel: CancellationToken,
@@ -209,29 +254,23 @@ impl IncrementalQueryService {
         cdc_poll_interval: Duration,
         options: IncrementalQueryOptions,
     ) -> Result<Self> {
-        let pool = start_pool(options.config).await?;
-        let (sender, receiver) = mpsc::unbounded_channel();
-        let inner = IncrementalQueryServiceInner::new(
-            pool,
+        let (mut service, batches) = Self::new_without_cdc(
             storage_root,
-            cancel.child_token(),
-            options,
+            &cancel,
             slate.db.clone(),
             indexer.clone(),
-            CdcSource {
-                object_path: slate.object_path.clone(),
-                object_store: slate.object_store.clone(),
-                poll_interval: cdc_poll_interval,
-                commands: sender.downgrade(),
-            },
-        );
-        tokio::spawn(inner.run(receiver));
-
-        Ok(Self {
-            commands: sender,
+            options,
+        )
+        .await?;
+        service.cdc_task = Some(spawn_cdc_loop(
+            slate.object_path.clone(),
+            slate.object_store.clone(),
             indexer,
-            retire_timeout: options.retire_timeout,
-        })
+            batches,
+            service.cdc_cancel.clone(),
+            cdc_poll_interval,
+        ));
+        Ok(service)
     }
 
     // The plan uses the schema at call time and the dispatcher reads the basis later.
@@ -266,17 +305,37 @@ impl IncrementalQueryService {
             .context("Incremental query service stopped")?
     }
 
-    pub(crate) async fn shutdown(&self) -> Result<()> {
-        let (response, result) = oneshot::channel();
-        self.commands
-            .send(IncrementalCommand::Shutdown { response })
-            .map_err(|_| anyhow!("Incremental query service stopped"))?;
-        tokio::time::timeout(self.retire_timeout, result)
+    // Stops CDC before the dispatcher stops the workers.
+    pub(crate) async fn shutdown(mut self) -> Result<()> {
+        self.cdc_cancel.cancel();
+        let cdc_task = self.cdc_task.take();
+        let commands = self.commands.clone();
+        // A task, so a shutdown that times out still finishes in the background.
+        let shutdown = tokio::spawn(async move {
+            let cdc_result = join_cdc(cdc_task).await;
+            let (response, result) = oneshot::channel();
+            let cleanup = match commands.send(IncrementalCommand::Shutdown { response }) {
+                Ok(()) => result
+                    .await
+                    .context("Incremental query service stopped")
+                    .and_then(|cleanup| cleanup),
+                Err(_) => Err(anyhow!("Incremental query service stopped")),
+            };
+            shutdown_result(cdc_result, cleanup)
+        });
+        tokio::time::timeout(self.retire_timeout, shutdown)
             .await
             .map_err(|_| RetirementTimeout::Shutdown {
                 timeout: self.retire_timeout,
             })?
-            .context("Incremental query service stopped")?
+            .context("Incremental query shutdown task panicked")?
+    }
+}
+
+// A service dropped without shutdown still stops its CDC task.
+impl Drop for IncrementalQueryService {
+    fn drop(&mut self) {
+        self.cdc_cancel.cancel();
     }
 }
 
@@ -301,10 +360,8 @@ struct IncrementalQueryServiceInner {
     options: IncrementalQueryOptions,
     // Workers scan this database to prime their circuits.
     db: Arc<slatedb::Db>,
-    // Gives the registration basis, and the schema that the CDC task decodes with.
+    // Gives the registration basis.
     indexer: Arc<RwLock<Indexer>>,
-    cdc: CdcSource,
-    cdc_task: Option<JoinHandle<Result<()>>>,
     // Sending end of worker retirement notifications. Each worker gets its own copy of this channel.
     completed: mpsc::UnboundedSender<Completion>,
     // Receiving end of worker retirement notifications. The service reads this.
@@ -319,7 +376,6 @@ impl IncrementalQueryServiceInner {
         options: IncrementalQueryOptions,
         db: Arc<slatedb::Db>,
         indexer: Arc<RwLock<Indexer>>,
-        cdc: CdcSource,
     ) -> Self {
         let (completed, completions) = mpsc::unbounded_channel();
         Self {
@@ -331,36 +387,9 @@ impl IncrementalQueryServiceInner {
             options,
             db,
             indexer,
-            cdc,
-            cdc_task: None,
             completed,
             completions,
         }
-    }
-
-    // The CDC task starts with the first query and reads the WAL from its beginning.
-    fn start_cdc(&mut self) {
-        if self.cdc_task.is_some() {
-            return;
-        }
-        self.cdc_task = Some(spawn_cdc_loop(
-            self.cdc.object_path.clone(),
-            self.cdc.object_store.clone(),
-            self.indexer.clone(),
-            self.cdc.commands.clone(),
-            self.cancel.clone(),
-            self.cdc.poll_interval,
-        ));
-    }
-
-    async fn join_cdc(&mut self) -> Result<()> {
-        let Some(handle) = self.cdc_task.take() else {
-            return Ok(());
-        };
-        handle
-            .await
-            .context("Incremental query CDC task failed to join")?
-            .context("Incremental query CDC loop failed")
     }
 
     fn retire(&mut self, completion: Completion) -> Result<()> {
@@ -375,9 +404,14 @@ impl IncrementalQueryServiceInner {
         completion.cleanup
     }
 
-    async fn run(mut self, mut receiver: mpsc::UnboundedReceiver<IncrementalCommand>) {
+    async fn run(
+        mut self,
+        mut commands: mpsc::UnboundedReceiver<IncrementalCommand>,
+        mut batches: mpsc::UnboundedReceiver<CdcBatch>,
+    ) {
         let mut shutdown = None;
         let mut cleanup = Ok(());
+        let mut cdc_running = true;
         loop {
             tokio::select! {
                 completion = self.completions.recv(), if !self.queries.is_empty() => {
@@ -391,7 +425,15 @@ impl IncrementalQueryServiceInner {
                         }
                     }
                 }
-                command = receiver.recv() => match command {
+                batch = batches.recv(), if cdc_running => match batch {
+                    Some(CdcBatch { batch, routed }) => {
+                        self.apply_batch(batch);
+                        let _ = routed.send(());
+                    }
+                    // The commands channel, not CDC, decides when the dispatcher stops.
+                    None => cdc_running = false,
+                },
+                command = commands.recv() => match command {
                     Some(IncrementalCommand::Register { plan, response }) => {
                         // No batch is routed between this read and the registry insert, so no lock with CDC is needed.
                         let basis = self.indexer.read().await.latest_tx_key();
@@ -406,18 +448,14 @@ impl IncrementalQueryServiceInner {
                             _ => { let _ = response.send(Err(anyhow!("Unknown incremental query handle: {handle:?}"))); }
                         }
                     }
-                    Some(IncrementalCommand::ApplyBatch { batch, response }) => {
-                        self.apply_batch(batch);
-                        let _ = response.send(());
-                    }
                     Some(IncrementalCommand::Shutdown { response }) => { shutdown = Some(response); break; }
                     None => break,
                 }
             }
         }
-        receiver.close();
+        commands.close();
+        batches.close();
         self.cancel.cancel();
-        let cdc_result = self.join_cdc().await;
         // A build cannot be interrupted, so a worker that builds retires after its build.
         for query in self.queries.values() {
             query.control.terminate(None);
@@ -443,15 +481,8 @@ impl IncrementalQueryServiceInner {
         if cleanup.is_ok() {
             cleanup = result;
         }
-        let result = match (cdc_result, cleanup) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(cdc_error), Err(cleanup_error)) => Err(cdc_error.context(format!(
-                "Incremental query service shutdown failed: {cleanup_error:#}"
-            ))),
-        };
         if let Some(response) = shutdown {
-            let _ = response.send(result);
+            let _ = response.send(cleanup);
         }
     }
 
@@ -528,7 +559,6 @@ impl IncrementalQueryServiceInner {
             return;
         }
         let pool = self.pool.clone();
-        self.start_cdc();
         let db = self.db.clone();
         let scans = initial_scans(&plan);
         self.start_query(
@@ -687,41 +717,37 @@ mod tests {
         slate
     }
 
-    // The CDC task of the service reads an empty WAL path, so only the tests route batches.
-    fn without_wal(slate: SlateComponents) -> SlateComponents {
-        SlateComponents {
-            object_path: "/without_wal".into(),
-            ..slate
-        }
-    }
-
     // The dispatcher reads the basis from the indexer, so a new indexer sets the basis of later registrations.
     async fn set_basis(service: &IncrementalQueryService, db: Arc<slatedb::Db>, basis_tx_id: i64) {
         *service.indexer.write().await =
             cdc::test_support::indexer_at(db, test_tx_key_with_tx_id(basis_tx_id));
     }
 
+    type Batches = mpsc::UnboundedSender<CdcBatch>;
+
+    // The service has no CDC task, so only the tests route batches, through the returned sender.
     // The registrations of this service have basis 1 until `set_basis` changes it.
     async fn service_on(
         slate: SlateComponents,
         dir: &Path,
         options: IncrementalQueryOptions,
-    ) -> IncrementalQueryService {
-        let slate = without_wal(slate);
+    ) -> (IncrementalQueryService, Batches) {
         let indexer = cdc::test_support::indexer_at(slate.db.clone(), test_tx_key_with_tx_id(1));
-        IncrementalQueryService::new_with_options(
+        IncrementalQueryService::new_without_cdc(
             dir.to_path_buf(),
-            CancellationToken::new(),
-            &slate,
+            &CancellationToken::new(),
+            slate.db.clone(),
             Arc::new(RwLock::new(indexer)),
-            Duration::from_millis(10),
             options,
         )
         .await
         .unwrap()
     }
 
-    async fn service_with_names(dir: &Path, names: &[(i64, &str)]) -> IncrementalQueryService {
+    async fn service_with_names(
+        dir: &Path,
+        names: &[(i64, &str)],
+    ) -> (IncrementalQueryService, Batches) {
         service_on(
             slate_with_names(names).await,
             dir,
@@ -730,7 +756,7 @@ mod tests {
         .await
     }
 
-    async fn service_at(dir: &Path) -> IncrementalQueryService {
+    async fn service_at(dir: &Path) -> (IncrementalQueryService, Batches) {
         service_with_names(dir, &[]).await
     }
 
@@ -758,13 +784,12 @@ mod tests {
     }
 
     // Routes a batch, as the CDC task does.
-    pub(super) async fn apply_batch(service: &IncrementalQueryService, batch: Batch) -> Result<()> {
-        let (response, result) = oneshot::channel();
-        service
-            .commands
-            .send(IncrementalCommand::ApplyBatch {
+    pub(super) async fn apply_batch(batches: &Batches, batch: Batch) -> Result<()> {
+        let (routed, result) = oneshot::channel();
+        batches
+            .send(CdcBatch {
                 batch: Arc::new(batch),
-                response,
+                routed,
             })
             .map_err(|_| anyhow!("Incremental query service stopped"))?;
         result.await.context("Incremental query service stopped")
@@ -803,7 +828,6 @@ mod tests {
             },
             slate.db.clone(),
             cdc::test_support::test_indexer(slate.db.clone()),
-            cdc::test_support::source(&slate),
         );
         let basis = test_tx_key_with_tx_id(1);
         let mut first = register_inline(&mut inner, single_pattern_plan(), basis).await;
@@ -849,7 +873,7 @@ mod tests {
     #[tokio::test]
     async fn unregister_removes_query_storage() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_with_names(dir.path(), &[(42, "Alice")]).await;
+        let (service, _batches) = service_with_names(dir.path(), &[(42, "Alice")]).await;
         let subscription = register(&service, single_pattern_plan()).await;
         assert!(path_has_entries(&dir.path().join("query-1")));
         service.unregister(subscription.handle).await.unwrap();
@@ -863,14 +887,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let slate = slate_with_names(&[(42, "Alice")]).await;
         let db = slate.db.clone();
-        let service = service_on(slate, dir.path(), IncrementalQueryOptions::default()).await;
+        let (service, batches) =
+            service_on(slate, dir.path(), IncrementalQueryOptions::default()).await;
         let mut primed = register(&service, single_pattern_plan()).await;
         // Alice comes after this basis, so the priming result is empty.
         set_basis(&service, db, 0).await;
         let mut empty = register(&service, single_pattern_plan()).await;
         assert!(empty.deltas.try_recv().is_err());
         let tx_key = test_tx_key_with_tx_id(2);
-        apply_batch(&service, single_batch(tx_key, vec![name_triple(43, "Bob")]))
+        apply_batch(&batches, single_batch(tx_key, vec![name_triple(43, "Bob")]))
             .await
             .unwrap();
         assert_eq!(
@@ -885,7 +910,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_aggregate_priming_rejects_registration_and_cleans_storage() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_with_names(dir.path(), &[(42, "Alice")]).await;
+        let (service, _batches) = service_with_names(dir.path(), &[(42, "Alice")]).await;
         let error = register_plan(
             &service,
             aggregate_plan("[:find (sum ?name) :where [?e :name ?name]]"),
@@ -900,7 +925,7 @@ mod tests {
     #[tokio::test]
     async fn live_aggregate_error_removes_only_the_affected_subscription() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path()).await;
+        let (service, batches) = service_at(dir.path()).await;
         let mut aggregate = register(
             &service,
             aggregate_plan("[:find (sum ?value) :where (or [?e :age ?value] [?e :name ?value])]"),
@@ -909,13 +934,13 @@ mod tests {
         let mut names = register(&service, single_pattern_plan()).await;
         delta(&mut aggregate).await.unwrap();
         apply_batch(
-            &service,
+            &batches,
             single_batch(test_tx_key_with_tx_id(2), vec![age_triple(42, 10)]),
         )
         .await
         .unwrap();
         apply_batch(
-            &service,
+            &batches,
             single_batch(test_tx_key_with_tx_id(3), vec![name_triple(43, "Alice")]),
         )
         .await
@@ -933,7 +958,7 @@ mod tests {
         assert!(aggregate.deltas.recv().await.is_none());
         delta(&mut names).await.unwrap();
         let tx_key = test_tx_key_with_tx_id(4);
-        apply_batch(&service, single_batch(tx_key, vec![name_triple(44, "Bob")]))
+        apply_batch(&batches, single_batch(tx_key, vec![name_triple(44, "Bob")]))
             .await
             .unwrap();
         assert_eq!(delta(&mut names).await.unwrap().tx_key, tx_key);
@@ -946,7 +971,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let slate = crate::slate::in_memory_slate().await;
         let db = slate.db.clone();
-        let service = service_on(
+        let (service, batches) = service_on(
             slate,
             dir.path(),
             IncrementalQueryOptions {
@@ -959,7 +984,7 @@ mod tests {
         let mut query = register(&service, single_pattern_plan()).await;
         for seq in 1..=1000 {
             apply_batch(
-                &service,
+                &batches,
                 single_batch(test_tx_key_with_tx_id(seq), vec![name_triple(seq, "old")]),
             )
             .await
@@ -968,7 +993,7 @@ mod tests {
         assert!(query.deltas.try_recv().is_err());
         let tx_key = test_tx_key_with_tx_id(1001);
         apply_batch(
-            &service,
+            &batches,
             single_batch(tx_key, vec![name_triple(1001, "new")]),
         )
         .await
@@ -982,14 +1007,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let slate = crate::slate::in_memory_slate().await;
         let db = slate.db.clone();
-        let service = service_on(slate, dir.path(), IncrementalQueryOptions::default()).await;
+        let (service, batches) =
+            service_on(slate, dir.path(), IncrementalQueryOptions::default()).await;
         set_basis(&service, db.clone(), 0).await;
         let mut before = register(&service, single_pattern_plan()).await;
         set_basis(&service, db, 2).await;
         let mut inside = register(&service, single_pattern_plan()).await;
         let tx_key = test_tx_key_with_tx_id(3);
         apply_batch(
-            &service,
+            &batches,
             Batch::new(
                 tx_key,
                 vec![
@@ -1029,7 +1055,7 @@ mod tests {
     #[tokio::test]
     async fn dropping_last_service_handle_cleans_up_queries() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path()).await;
+        let (service, _batches) = service_at(dir.path()).await;
         let mut query = register(&service, single_pattern_plan()).await;
         drop(service);
         assert!(
@@ -1042,9 +1068,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_service_stops_cdc() {
+        let dir = tempfile::tempdir().unwrap();
+        let (service, _batches) = service_at(dir.path()).await;
+        let cdc_cancel = service.cdc_cancel.clone();
+        drop(service);
+        assert!(cdc_cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn dispatcher_serves_commands_after_cdc_exits() {
+        let dir = tempfile::tempdir().unwrap();
+        let (service, batches) = service_at(dir.path()).await;
+        drop(batches);
+        let subscription = register(&service, single_pattern_plan()).await;
+        service.unregister(subscription.handle).await.unwrap();
+        service.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn abandoned_registration_response_retires_query() {
         let dir = tempfile::tempdir().unwrap();
-        let service = service_at(dir.path()).await;
+        let (service, batches) = service_at(dir.path()).await;
         let (response, result) = oneshot::channel();
         drop(result);
         service
@@ -1054,7 +1099,7 @@ mod tests {
                 response,
             })
             .unwrap();
-        apply_batch(&service, single_batch(test_tx_key_with_tx_id(2), vec![]))
+        apply_batch(&batches, single_batch(test_tx_key_with_tx_id(2), vec![]))
             .await
             .unwrap();
         service.shutdown().await.unwrap();

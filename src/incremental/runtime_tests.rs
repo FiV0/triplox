@@ -74,7 +74,6 @@ impl Fixture {
             },
             slate.db.clone(),
             cdc::test_support::test_indexer(slate.db.clone()),
-            cdc::test_support::source(&slate),
         );
         Self {
             inner,
@@ -201,18 +200,29 @@ impl Fixture {
         assert_dropped(self.drops);
     }
 
-    async fn start(self) -> (IncrementalQueryService, JoinHandle<()>, TempDir) {
-        let (commands, receiver) = mpsc::unbounded_channel();
+    // The service has no CDC task, so only the returned sender routes batches.
+    async fn start(
+        self,
+    ) -> (
+        IncrementalQueryService,
+        mpsc::UnboundedSender<CdcBatch>,
+        JoinHandle<()>,
+        TempDir,
+    ) {
+        let (commands, command_receiver) = mpsc::unbounded_channel();
+        let (batches, batch_receiver) = mpsc::unbounded_channel();
         let service = IncrementalQueryService {
             commands,
             indexer: self.inner.indexer.clone(),
             retire_timeout: Duration::from_millis(50),
+            cdc_cancel: CancellationToken::new(),
+            cdc_task: None,
         };
         let dispatcher = tokio::spawn(async move {
-            self.inner.run(receiver).await;
+            self.inner.run(command_receiver, batch_receiver).await;
             assert_dropped(self.drops);
         });
-        (service, dispatcher, self._storage)
+        (service, batches, dispatcher, self._storage)
     }
 }
 
@@ -391,8 +401,9 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
     next(&mut healthy).await.unwrap();
     let control = fixture.inner.queries[&query.handle].control.clone();
     let storage_path = fixture.inner.query_storage_path(query.handle);
-    let (commands, receiver) = mpsc::unbounded_channel();
-    let dispatcher = tokio::spawn(fixture.inner.run(receiver));
+    let (commands, command_receiver) = mpsc::unbounded_channel();
+    let (batches, batch_receiver) = mpsc::unbounded_channel();
+    let dispatcher = tokio::spawn(fixture.inner.run(command_receiver, batch_receiver));
     let (response, mut result) = oneshot::channel();
     commands
         .send(IncrementalCommand::Unregister {
@@ -408,9 +419,9 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
     assert!(storage_path.exists());
     let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
     tx_key.tx_id += 2;
-    let (response, applied) = oneshot::channel();
-    commands
-        .send(IncrementalCommand::ApplyBatch {
+    let (routed, applied) = oneshot::channel();
+    batches
+        .send(CdcBatch {
             batch: Arc::new(single_batch(
                 tx_key,
                 vec![Tup2(
@@ -422,7 +433,7 @@ async fn unregister_waits_for_apply_without_blocking_dispatch() {
                     1,
                 )],
             )),
-            response,
+            routed,
         })
         .unwrap();
     applied.await.unwrap();
@@ -444,8 +455,9 @@ async fn shutdown_waits_for_in_flight_apply_and_removes_storage() {
     started(&mut steps).await;
     let control = fixture.inner.queries[&query.handle].control.clone();
     let storage_path = fixture.inner.query_storage_path(query.handle);
-    let (commands, receiver) = mpsc::unbounded_channel();
-    let dispatcher = tokio::spawn(fixture.inner.run(receiver));
+    let (commands, command_receiver) = mpsc::unbounded_channel();
+    let (_batches, batch_receiver) = mpsc::unbounded_channel();
+    let dispatcher = tokio::spawn(fixture.inner.run(command_receiver, batch_receiver));
     let (response, mut result) = oneshot::channel();
     commands
         .send(IncrementalCommand::Shutdown { response })
@@ -475,7 +487,7 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
     next(&mut healthy).await.unwrap();
     let storage_path = fixture.inner.query_storage_path(query.handle);
     let control = fixture.inner.queries[&query.handle].control.clone();
-    let (service, dispatcher, _storage) = fixture.start().await;
+    let (service, batches, dispatcher, _storage) = fixture.start().await;
 
     let error = tokio::time::timeout(Duration::from_secs(5), service.unregister(query.handle))
         .await
@@ -488,7 +500,7 @@ async fn unregister_timeout_preserves_storage_and_other_queries_keep_progressing
     let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
     tx_key.tx_id += 2;
     apply_batch(
-        &service,
+        &batches,
         single_batch(
             tx_key,
             vec![Tup2(
@@ -524,7 +536,7 @@ async fn shutdown_timeout_preserves_storage_until_running_apply_finishes() {
     fixture.apply(1);
     started(&mut steps).await;
     let storage_path = fixture.inner.query_storage_path(query.handle);
-    let (service, dispatcher, _storage) = fixture.start().await;
+    let (service, _batches, dispatcher, _storage) = fixture.start().await;
 
     let error = tokio::time::timeout(Duration::from_secs(5), service.shutdown())
         .await
@@ -551,11 +563,11 @@ async fn shutdown_stops_cdc_before_workers() {
     let (mut query, _) = fixture.query(None, false).await;
     let storage_path = fixture.inner.query_storage_path(query.handle);
     let (release, gate) = oneshot::channel::<()>();
-    fixture.inner.cdc_task = Some(tokio::spawn(async move {
+    let (mut service, _batches, dispatcher, _storage) = fixture.start().await;
+    service.cdc_task = Some(tokio::spawn(async move {
         let _ = gate.await;
         Ok(())
     }));
-    let (service, dispatcher, _storage) = fixture.start().await;
 
     let error = tokio::time::timeout(Duration::from_secs(5), service.shutdown())
         .await
@@ -565,7 +577,7 @@ async fn shutdown_stops_cdc_before_workers() {
         error.downcast_ref::<RetirementTimeout>(),
         Some(RetirementTimeout::Shutdown { .. })
     ));
-    // The dispatcher still waits for CDC, so the worker keeps its storage.
+    // Shutdown still waits for CDC, so the dispatcher keeps the worker and its storage.
     assert!(!dispatcher.is_finished());
     assert!(storage_path.exists());
     release.send(()).unwrap();
@@ -584,8 +596,8 @@ async fn shutdown_reports_cdc_error_and_cleanup_failure() {
     let storage_path = fixture.inner.query_storage_path(query.handle);
     std::fs::remove_dir(&storage_path).unwrap();
     std::fs::write(&storage_path, "not a directory").unwrap();
-    fixture.inner.cdc_task = Some(tokio::spawn(async { Err(anyhow!("cdc failed")) }));
-    let (mut service, dispatcher, _storage) = fixture.start().await;
+    let (mut service, _batches, dispatcher, _storage) = fixture.start().await;
+    service.cdc_task = Some(tokio::spawn(async { Err(anyhow!("cdc failed")) }));
     service.retire_timeout = Duration::from_secs(5);
 
     let message = format!("{:#}", service.shutdown().await.unwrap_err());
@@ -607,12 +619,12 @@ async fn shutdown_reports_cdc_error_and_cleanup_failure() {
 #[tokio::test]
 async fn shutdown_reports_cdc_task_panic() {
     let mut fixture = Fixture::new(4).await;
-    fixture.inner.cdc_task = Some(tokio::spawn(async {
+    let (mut service, _batches, dispatcher, _storage) = fixture.start().await;
+    service.cdc_task = Some(tokio::spawn(async {
         panic!("cdc task panic");
         #[allow(unreachable_code)]
         Ok(())
     }));
-    let (mut service, dispatcher, _storage) = fixture.start().await;
     service.retire_timeout = Duration::from_secs(5);
 
     let message = format!("{:#}", service.shutdown().await.unwrap_err());
@@ -634,7 +646,7 @@ async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
     let storage_path = fixture.inner.query_storage_path(query.handle);
     std::fs::remove_dir(&storage_path).unwrap();
     std::fs::write(&storage_path, "not a directory").unwrap();
-    let (mut service, dispatcher, _storage) = fixture.start().await;
+    let (mut service, batches, dispatcher, _storage) = fixture.start().await;
     service.retire_timeout = Duration::from_secs(5);
     let error = service.unregister(query.handle).await.unwrap_err();
     assert!(error.downcast_ref::<std::io::Error>().is_some());
@@ -653,7 +665,7 @@ async fn unregister_cleanup_failure_does_not_stop_dispatcher() {
     tokio::time::timeout(
         Duration::from_secs(5),
         apply_batch(
-            &service,
+            &batches,
             single_batch(
                 tx_key,
                 vec![Tup2(
@@ -683,7 +695,7 @@ async fn unregister_is_not_blocked_by_registration() {
     let mut fixture = Fixture::new(4).await;
     let (query, _) = fixture.query(None, false).await;
     let (release, registration, _) = fixture.gated_build(vec![]);
-    let (mut service, dispatcher, _storage) = fixture.start().await;
+    let (mut service, batches, dispatcher, _storage) = fixture.start().await;
     service.retire_timeout = Duration::from_secs(5);
     // The build is still blocked, so this returns only if the dispatcher keeps serving.
     service.unregister(query.handle).await.unwrap();
@@ -695,7 +707,7 @@ async fn unregister_is_not_blocked_by_registration() {
         .unwrap();
     let batch = Fixture::batch(1);
     apply_batch(
-        &service,
+        &batches,
         single_batch(batch.tx_key, batch.triples().to_vec()),
     )
     .await
@@ -712,7 +724,7 @@ async fn unregister_is_not_blocked_by_registration() {
 async fn shutdown_waits_for_pending_build_and_rejects_it() {
     let mut fixture = Fixture::new(4).await;
     let (release, registration, storage_path) = fixture.gated_build(vec![]);
-    let (mut service, dispatcher, _storage) = fixture.start().await;
+    let (mut service, _batches, dispatcher, _storage) = fixture.start().await;
     service.retire_timeout = Duration::from_secs(5);
     let shutdown = tokio::spawn(async move { service.shutdown().await });
     tokio::time::sleep(Duration::from_millis(50)).await;

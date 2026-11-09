@@ -9,15 +9,14 @@ use futures::{stream, StreamExt, TryStreamExt};
 use log::info;
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
-use tokio::sync::mpsc::WeakUnboundedSender;
-use tokio::sync::{oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::codec::{self, Encode};
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot};
 use crate::incremental::worker::Batch;
-use crate::incremental::{EncodedTriple, IncrementalCommand};
+use crate::incremental::{CdcBatch, EncodedTriple};
 use crate::indexer::{aev_key_to_parts, ave_key_to_parts, Indexer};
 use crate::ops::{DataType, Datom, DatomOp};
 use crate::partition::extract_counter;
@@ -95,7 +94,7 @@ pub(super) fn spawn_cdc_loop(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
     indexer: Arc<RwLock<Indexer>>,
-    commands: WeakUnboundedSender<IncrementalCommand>,
+    batches: mpsc::UnboundedSender<CdcBatch>,
     cancel: CancellationToken,
     poll_interval: Duration,
 ) -> JoinHandle<Result<()>> {
@@ -103,18 +102,17 @@ pub(super) fn spawn_cdc_loop(
         object_path,
         object_store,
         indexer,
-        commands,
+        batches,
         cancel,
         poll_interval,
     ))
 }
 
-// The weak sender lets the dispatcher stop when the last service handle drops.
 async fn run_cdc_loop(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
     indexer: Arc<RwLock<Indexer>>,
-    commands: WeakUnboundedSender<IncrementalCommand>,
+    batches: mpsc::UnboundedSender<CdcBatch>,
     cancel: CancellationToken,
     poll_interval: Duration,
 ) -> Result<()> {
@@ -133,22 +131,18 @@ async fn run_cdc_loop(
             continue;
         }
         let batch = batch_from_datoms(&datoms, &schema)?;
-        let (response, routed) = oneshot::channel();
-        let command = IncrementalCommand::ApplyBatch {
+        let (routed, ack) = oneshot::channel();
+        let batch = CdcBatch {
             batch: Arc::new(batch),
-            response,
+            routed,
         };
-        let Some(commands) = commands.upgrade() else {
-            break;
-        };
-        if commands.send(command).is_err() {
+        if batches.send(batch).is_err() {
             break;
         }
-        drop(commands);
-        // A dispatcher that shuts down can wait for this task, so the cancel also ends the wait.
+        // Shutdown joins this task before it stops the dispatcher, so the cancel also ends the wait.
         tokio::select! {
             _ = cancel.cancelled() => break,
-            routed = routed => if routed.is_err() { break },
+            ack = ack => if ack.is_err() { break },
         }
     }
 
@@ -329,16 +323,13 @@ where
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::sync::Arc;
-    use std::time::Duration;
 
-    use tokio::sync::{mpsc, RwLock};
+    use tokio::sync::RwLock;
 
     use crate::inc_query::test_support::test_schema;
-    use crate::incremental::CdcSource;
     use crate::indexer::{Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
     use crate::metadata::{Metadata, PartitionMap};
     use crate::ops::Datom;
-    use crate::slate::SlateComponents;
     use crate::transaction::TxKey;
 
     // An indexer whose latest indexed transaction is `basis`.
@@ -356,17 +347,6 @@ pub(crate) mod test_support {
             db,
             *crate::bootstrap::BOOTSTRAP_TX_KEY,
         )))
-    }
-
-    // A source on the WAL of `slate` whose channel is closed, so its CDC task never routes a batch.
-    pub(in crate::incremental) fn source(slate: &SlateComponents) -> CdcSource {
-        let (commands, _) = mpsc::unbounded_channel();
-        CdcSource {
-            object_path: slate.object_path.clone(),
-            object_store: slate.object_store.clone(),
-            poll_interval: Duration::from_millis(10),
-            commands: commands.downgrade(),
-        }
     }
 
     // Writes the index entries of `datoms` as transaction entity `tx_eid` of the test schema.
@@ -592,7 +572,7 @@ mod tests {
     async fn cdc_loop_exits_ok_when_cancelled() {
         let slate = crate::slate::in_memory_slate().await;
         let indexer = test_support::test_indexer(slate.db.clone());
-        let (commands, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (batches, _receiver) = mpsc::unbounded_channel();
         let cancel = CancellationToken::new();
         cancel.cancel();
 
@@ -600,7 +580,7 @@ mod tests {
             slate.object_path,
             slate.object_store,
             indexer,
-            commands.downgrade(),
+            batches,
             cancel,
             Duration::from_micros(250),
         )
@@ -635,25 +615,23 @@ mod tests {
             *crate::bootstrap::BOOTSTRAP_TX_KEY,
             DEFAULT_TX_COMPLETION_CAPACITY,
         )));
-        let (commands, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (batches, mut receiver) = mpsc::unbounded_channel();
         let cancel = CancellationToken::new();
         let cdc = tokio::spawn(run_cdc_loop(
             slate.object_path,
             slate.object_store,
             indexer,
-            commands.downgrade(),
+            batches,
             cancel.clone(),
             Duration::from_micros(250),
         ));
 
         // The routing ack never comes, so only the cancel can end the loop.
-        let Some(IncrementalCommand::ApplyBatch { batch, response }) =
+        let CdcBatch { batch, routed } =
             tokio::time::timeout(Duration::from_secs(5), receiver.recv())
                 .await
                 .unwrap()
-        else {
-            panic!("expected an ApplyBatch command");
-        };
+                .unwrap();
         assert_eq!(batch.tx_key.tx_id, 1);
         cancel.cancel();
         tokio::time::timeout(Duration::from_secs(5), cdc)
@@ -661,7 +639,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        drop(response);
+        drop(routed);
     }
 
     fn tx_instant(tx_id: i64, instant: Instant) -> Datom {

@@ -265,9 +265,10 @@ value such as an error. Their signatures also do not return a `Result`.
 ## Runtime Flow
 
 `IncrementalQueryService` is the boundary between a node and its incremental
-queries. The node holds one service handle. The handle sends commands to the
-dispatcher. The diagram that follows shows the tasks and the channels between
-them:
+queries. The node owns the service. The service starts the `RuntimePool`, the
+dispatcher, and the CDC task when it starts. It sends commands to the dispatcher
+on one channel, and the CDC task sends batches to the dispatcher on a second
+channel. The diagram that follows shows the tasks and the channels between them:
 
 ```text
 ┌─ Tokio runtime (node or dedicated) ────────────────────────────────────────────────────────┐
@@ -275,17 +276,16 @@ them:
 │  ┌─ register_query(query) ─────────────┐                ┌─ CDC task ─────────────────────┐ │
 │  │ plan_query                          │                │ loop:                          │ │
 │  │ send Register{plan}                 │                │  WAL next_batch → Batch        │ │
-│  │ await response                      │                │  send ApplyBatch ⇄ routed ack  │ │
+│  │ await response                      │                │  send CdcBatch ⇄ routed ack    │ │
 │  └──────┬─────────────────▲────────────┘                └───────────────┬────────────────┘ │
-│         │ Register        │ Ok(subscription) / Err                      │ ApplyBatch       │
+│         │ Register        │ Ok(subscription) / Err                      │ CdcBatch         │
 │         │ Unregister      │ (sent by the worker after priming)          │                  │
 │         ▼                 │                                             ▼                  │
 │  ┌─ Dispatcher task ──────┼────────────────────────────────────────────────────────────┐   │
 │  │ registry: handle → { inbox, basis, control }                                        │   │
 │  │ Register:   basis = latest indexed TxKey                                            │   │
 │  │             new inbox ← Prime{basis, response}; insert; spawn Worker                │   │
-│  │             (first query: start RuntimePool + CDC task)                             │   │
-│  │ ApplyBatch: per query batch.after(basis) → inbox ← Apply(batch)   (full ⇒ Lagged)   │   │
+│  │ CdcBatch:   per query batch.after(basis) → inbox ← Apply(batch)   (full ⇒ Lagged)   │   │
 │  │ Unregister: control.terminate; reply on Completion                                  │   │
 │  └───────────────┬────────┼───────────────────────────────────────────▲────────────────┘   │
 │                  │ inbox  │ [Prime, Apply, Apply, …], bounded FIFO    │ Completion         │
@@ -301,7 +301,7 @@ them:
 └─────────┼───────────────────────────────────┼──────────────────────────────────────────────┘
           │ deltas: priming first, then WAL   │ transaction_async
           ▼                                   ▼
-  ┌─────────────────────┐          ┌─ DBSP RuntimePool (shared, started once) ──┐
+  ┌─────────────────────┐          ┌─ DBSP RuntimePool (shared, service-owned) ─┐
   │ SubscriptionDeltas  │          │ `threads` foreground threads, each circuit │
   └─────────────────────┘          │ pinned to one; `merger_threads` compaction │
                                    └────────────────────────────────────────────┘
@@ -315,7 +315,8 @@ The runtime has these parts:
   one message at a time. It never builds a circuit, scans data, or steps a
   circuit.
 - The CDC (change data capture) task reads the SlateDB WAL. It turns each WAL
-  file into one batch and sends the batch to the dispatcher.
+  file into one batch and sends the batch to the dispatcher. The service owns
+  the task and stops it.
 - Each query has one worker task that owns the circuit of the query. The inbox
   of the worker is a bounded FIFO (first in, first out) queue of `Prime` and
   `Apply` messages.
@@ -336,8 +337,7 @@ registration. Registration has these steps:
    This `TxKey` is the basis.
 3. The dispatcher creates the inbox and puts `Prime{basis, response}` in it as
    the first message.
-4. The dispatcher adds the query to the registry and starts the worker. For the
-   first query, it also starts the `RuntimePool` and the CDC task.
+4. The dispatcher adds the query to the registry and starts the worker.
 5. The worker builds the circuit on the pool, on a blocking thread.
 6. The worker takes `Prime` from the inbox. It scans the snapshot at the basis
    and steps the circuit with the snapshot triples.
@@ -364,7 +364,7 @@ of its transaction. A batch goes through these steps:
    schema. A datom is one asserted or retracted fact about an entity.
 2. The CDC task converts the datoms to a batch of weighted `EncodedTriple`
    tuples.
-3. The CDC task sends `ApplyBatch` to the dispatcher and waits for the routing
+3. The CDC task sends a `CdcBatch` to the dispatcher and waits for the routing
    acknowledgement.
 4. For each query, the dispatcher removes the transactions at or before the
    basis of the query. If transactions remain, it puts `Apply(batch)` in the
@@ -375,7 +375,7 @@ of its transaction. A batch goes through these steps:
    the step.
 7. If the step result is not empty, the worker sends it as a delta.
 
-The acknowledgement of `ApplyBatch` tells the CDC task that the dispatcher
+The acknowledgement of a `CdcBatch` tells the CDC task that the dispatcher
 routed the batch. It does not tell the CDC task that the circuits applied the
 batch. The acknowledgement paces the CDC task. Each query has one FIFO consumer
 and at most one step in progress. Different queries advance independently.
@@ -389,8 +389,9 @@ the result of a circuit. Thus, a query without matching triples skips the step.
 
 The dispatcher does three actions in one step: it reads the basis, it creates
 the inbox with `Prime`, and it adds the query to the registry. The dispatcher
-handles one message at a time. Thus, the dispatcher cannot route a batch between
-these three actions. No lock between registration and the CDC task is necessary.
+handles one command or batch at a time. Thus, the dispatcher cannot route a
+batch between these three actions. No lock between registration and the CDC task
+is necessary.
 
 A batch that the dispatcher routed before this step does not go to the new
 query. This is correct, because the batch contains only transactions at or
@@ -441,8 +442,9 @@ condition for a lag stop. Thus, the stop signal cannot go through the inbox.
 
 ## CDC Flow
 
-The node has one CDC task for all incremental queries. The dispatcher starts it
-with the first query. The task uses the SlateDB `WalReader` through the
+The node has one CDC task for all incremental queries. The service starts it
+when the service starts, so the task reads the WAL even when no query is
+registered. The task uses the SlateDB `WalReader` through the
 `CdcStream` helper of Triplox. It reads the WAL from the beginning and turns
 each WAL file into one batch. It extracts EAV (entity, attribute, value) datoms
 with the current node schema.
@@ -469,7 +471,7 @@ For each WAL file, the CDC flow has these steps:
 3. The metadata of the last transaction becomes the `TxKey` of the batch.
 4. The datoms become a weighted batch of encoded triples. Each triple has the id
    of its transaction.
-5. The task sends `ApplyBatch` to the dispatcher and waits for the routing
+5. The task sends a `CdcBatch` to the dispatcher and waits for the routing
    acknowledgement.
 6. The dispatcher trims the batch for each query and puts the remainder in each
    inbox. If an inbox overflows, the dispatcher stops that query.
@@ -479,6 +481,12 @@ For each WAL file, the CDC flow has these steps:
 The cursor advances as the task reads rows. It does not depend on the progress
 of the workers. If the CDC task fails, the task stops, and shutdown reports the
 error.
+
+The CDC task sends its batches on a channel of its own, and the dispatcher holds
+only the receiving end. The command channel thus closes when the service drops,
+and the dispatcher then retires all queries. If the batch channel closes, the
+dispatcher stops reading batches and keeps serving commands. A service that
+drops without shutdown cancels the CDC task.
 
 ---
 
@@ -512,10 +520,12 @@ transactions arrive, the worker still detects a dropped receiver.
 Retirement is the stop and the cleanup of a query. `Shutdown` retires all
 queries in these steps:
 
-1. The dispatcher stops the CDC task and waits for it.
-2. The dispatcher stops all workers through their `Control`.
-3. The dispatcher waits for a `Completion` from each worker.
-4. The dispatcher shuts down the `RuntimePool` and sends the result.
+1. The service cancels the CDC task and waits for it.
+2. The service sends `Shutdown` to the dispatcher.
+3. The dispatcher stops all workers through their `Control`.
+4. The dispatcher waits for a `Completion` from each worker.
+5. The dispatcher shuts down the `RuntimePool` and sends the result.
+6. The service reports the CDC error and the cleanup error together.
 
 A worker cannot stop a circuit build that started. The build finishes, and then
 the worker stops. If a worker stops before priming finishes, the answer to the
@@ -533,8 +543,9 @@ Unregister and shutdown wait up to 10 seconds. If retirement does not finish in
 that time, they return a `RetirementTimeout` error. Shutdown uses one deadline
 for all of its steps.
 
-A timeout only stops the wait of the caller. The dispatcher and the retiring
-workers continue until the steps in progress and the cleanup finish. The storage
+A timeout only stops the wait of the caller. The remaining shutdown steps, the
+dispatcher, and the retiring workers continue until the steps in progress and
+the cleanup finish. The storage
 stays until the circuit destruction finishes. The dispatcher logs late cleanup
 failures. There are no execution timeouts and no forced stops of circuits. A
 circuit that never returns keeps its runtime resources and its storage.
@@ -561,7 +572,7 @@ The `[incremental]` configuration section sets the DBSP pool:
 
 The dispatcher, the CDC task, and the workers are Tokio tasks. The service owns
 no threads of its own. All circuits run on one shared DBSP `RuntimePool`, which
-the dispatcher starts with the first query. Each circuit is pinned to one
+the service starts when it starts. Each circuit is pinned to one
 foreground thread of the pool. The foreground threads queue the circuits that
 are ready. Thus, the number of foreground threads alone limits the number of
 concurrent steps.
