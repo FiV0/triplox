@@ -53,11 +53,30 @@
     (artifacts/append! output {:phase "warmup" :status "ok"
                               :queries (count (:query-ids config))})))
 
-(defn- await-views! [engine views tx timeout-ms]
-  (let [deadline (+ (System/nanoTime) (* timeout-ms 1000000))]
-    (mapv (fn [[id view]]
-            (let [remaining (max 0 (quot (- deadline (System/nanoTime)) 1000000))]
-              [id ((:await-view! engine) view tx remaining)])) views)))
+(defn- await-quiet-views!
+  "Waits until no view has changed for `quiet-ms`, then returns each view's rows and the
+  time of the last change. Views do not report transaction progress, so a quiet period is
+  the only sign that they have applied everything."
+  [engine views quiet-ms timeout-ms]
+  (let [start (System/nanoTime)
+        deadline (+ start (* timeout-ms 1000000))
+        quiet-ns (* quiet-ms 1000000)
+        ;; A view without changes counts as quiet from before the wait.
+        floor (- start quiet-ns)]
+    (loop []
+      (let [updated (reduce max floor (map (fn [[_ view]] ((:view-updated engine) view)) views))
+            now (System/nanoTime)]
+        (cond
+          (>= (- now updated) quiet-ns)
+          {:updated-ns updated
+           :snapshots (mapv (fn [[id view]] [id {:rows ((:view-rows engine) view)}]) views)}
+          (>= now deadline)
+          (throw (ex-info "Incremental views did not go quiet"
+                          {:quiet-ms quiet-ms :timeout-ms timeout-ms}))
+          :else
+          (do (Thread/sleep (max 1 (quot (min (- (+ updated quiet-ns) now) (- deadline now))
+                                         1000000)))
+              (recur)))))))
 
 (defn- verify-views! [engine executor {:keys [output timeout-ms]} checkpoint snapshots]
   (let [db ((:db engine))]
@@ -79,10 +98,10 @@
       (finally (when-let [close (:close-db! engine)] (close db))))))
 
 (defn- save-views! [{:keys [output verify-expected]} checkpoint snapshots]
-  (doseq [[id {:keys [rows tx-key]}] snapshots]
+  (doseq [[id {:keys [rows]}] snapshots]
     (let [answer (artifacts/save-result! output checkpoint id rows)]
       (artifacts/append! output (merge {:phase "view" :checkpoint checkpoint :query id
-                                        :applied-tx-id (:tx-id tx-key) :status "ok"} answer)))
+                                        :status "ok"} answer)))
     (when verify-expected
       (artifacts/verify-upstream! output id rows))))
 
@@ -138,7 +157,8 @@
           loaded))
       (finally (.interrupt ^Thread reporter)))))
 
-(defn run! [engine {:keys [engine-name output data-dir timeout-ms catchup-timeout-ms query-ids]
+(defn run! [engine {:keys [engine-name output data-dir timeout-ms catchup-timeout-ms quiet-ms
+                           query-ids]
                     :as config}]
   (let [executor (Executors/newSingleThreadExecutor)
         incremental? (= engine-name "triplox-incremental")
@@ -152,11 +172,14 @@
                                     :status "ok"})))
       (let [start (System/nanoTime)
             loaded (load! engine config #(bounded executor timeout-ms (fn [] ((:transact! engine) %))))
+            ingested (System/nanoTime)
             ingestion-ms (milliseconds start)
             tx (:last-tx loaded)
-            snapshots (when (and incremental? (pos? (:transactions loaded)))
-                        (await-views! engine @views tx catchup-timeout-ms))
-            initial-ms (when incremental? (milliseconds start))]
+            {:keys [snapshots updated-ns]}
+            (when (and incremental? (pos? (:transactions loaded)))
+              (await-quiet-views! engine @views quiet-ms catchup-timeout-ms))
+            ;; Catchup ends at the last view change, not when the quiet period confirms it.
+            catchup-ms (/ (max 0 (- (or updated-ns ingested) ingested)) 1e6)]
         (when-not (pos? (reduce + (vals (:table-counts loaded))))
           (throw (ex-info "Dataset contains no rows" {})))
         (artifacts/append! output {:phase "ingestion" :elapsed-ms ingestion-ms :status "ok"
@@ -164,12 +187,12 @@
         (artifacts/write-json! (io/file output "load.json")
                                (dissoc loaded :last-tx))
         (if incremental?
-          (let [catchup-ms (- initial-ms ingestion-ms)]
-            (artifacts/append! output {:phase "initial" :status "ok" :ingestion-ms ingestion-ms
-                                      :catchup-ms catchup-ms :elapsed-ms initial-ms
-                                      :final-tx-id (:tx-id tx)})
-            (verify-views! engine executor config "final" snapshots)
-            (save-views! config "final" snapshots))
+          (do (artifacts/append! output {:phase "initial" :status "ok" :ingestion-ms ingestion-ms
+                                        :catchup-ms catchup-ms :quiet-ms quiet-ms
+                                        :elapsed-ms (+ ingestion-ms catchup-ms)
+                                        :final-tx-id (:tx-id tx)})
+              (verify-views! engine executor config "final" snapshots)
+              (save-views! config "final" snapshots))
           (do (warmup! engine executor config)
               (query-pass! engine executor config true))))
       (finally

@@ -76,8 +76,8 @@ clojure -M:datalevin:triplox:integration-test
 Run `./job test` first to compile the CSV reader. Set `TRIPLOX_HOST` and
 `TRIPLOX_PORT` to override `127.0.0.1:5490`. Use the dev configuration, which
 gives each connection its own in-memory database.
-It registers all 113 views before batched ingestion, waits for the final
-loading transaction, and compares every query's incremental result with its
+It registers all 113 views before batched ingestion, waits for the views to go
+quiet, and compares every query's incremental result with its
 standard Triplox result and the original Datalevin query. It also checks the
 known nonempty answer for query 11b. The Datalevin oracle uses uncached answers.
 Most other queries are empty on this small fixture, so this does not establish
@@ -122,9 +122,10 @@ the run. Triplox standard has no explicit warmup; reports label this.
 
 Every incremental query is registered before ingestion begins. Each client
 view continuously drains its subscription while batched transactions load the
-data. The last committed transaction supplies the target transaction key.
-Catchup ends when **every view has applied** through that key, including
-transactions that leave its result unchanged. Registration and schema setup
+data. Subscriptions do not report transactions that leave a view unchanged,
+so views cannot say when they have applied the last transaction. Instead the
+runner waits until **no view has changed** for the quiet period. Catchup ends
+at the last view change; the quiet period itself is not counted. Registration and schema setup
 are reported outside the score. Ingestion includes CSV parsing, transaction
 construction and transaction acknowledgments. Result serialization
 and verification happen after timed work.
@@ -155,8 +156,10 @@ Default controls:
 - `--timeout-ms 600000`: transaction, query, and registration deadlines. Query
   interruption is best effort; the process exits on failure. Waiting for the
   last loaded transaction to be indexed has no deadline.
-- `--catchup-timeout-ms 600000`: deadline for every incremental view to apply
-  the last loaded transaction, counted from the end of indexing.
+- `--catchup-timeout-ms 600000`: deadline for the incremental views to go
+  quiet, counted from the end of indexing.
+- `--quiet-ms 10000`: how long no view may change before catchup counts as
+  finished.
 - `--run-timeout-seconds 86400`: outer limit for each JVM process.
 - `--port 15490 --datomic-port 14334`: local service ports; Datomic also needs
   the next port for H2. Occupied ports fail instead of reusing another service.
