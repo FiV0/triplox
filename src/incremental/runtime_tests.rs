@@ -826,3 +826,26 @@ async fn inbox_overflow_during_build_returns_lagged_subscription() {
     assert!(query.deltas.recv().await.is_none());
     fixture.finish().await;
 }
+
+#[tokio::test]
+async fn stop_after_lag_during_build_keeps_the_lag() {
+    let mut fixture = Fixture::new(1).await;
+    let (release, registration, _) = fixture.gated_build(vec![]);
+    fixture.apply(1);
+    let overflow = fixture.apply(2);
+    // A shutdown stops the query again before the worker reads the lag.
+    fixture.inner.queries[&1].control.terminate(None);
+    release.send(()).unwrap();
+    let mut query = tokio::time::timeout(Duration::from_secs(5), registration)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let error = next(&mut query).await.unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<SubscriptionLagged>().unwrap().tx_key,
+        overflow
+    );
+    assert_eq!(fixture.retire().await, query.handle);
+    fixture.finish().await;
+}

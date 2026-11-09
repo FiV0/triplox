@@ -141,13 +141,17 @@ impl Control {
     pub fn terminate(&self, reason: Option<Termination>) {
         let mut terminal = self.terminal.lock().unwrap();
         self.stop.cancel();
-        if let Terminal::Open(sender) = std::mem::replace(&mut *terminal, Terminal::Closed) {
-            if let Some(reason) = reason {
-                let lagged = matches!(reason, Termination::Lagged(_));
-                if sender.send(reason).is_ok() && lagged {
-                    *terminal = Terminal::Lagged;
+        match std::mem::replace(&mut *terminal, Terminal::Closed) {
+            Terminal::Open(sender) => {
+                if let Some(reason) = reason {
+                    let lagged = matches!(reason, Termination::Lagged(_));
+                    if sender.send(reason).is_ok() && lagged {
+                        *terminal = Terminal::Lagged;
+                    }
                 }
             }
+            // Only the first terminate sets the state, so a later stop keeps a recorded lag.
+            state => *terminal = state,
         }
     }
 
