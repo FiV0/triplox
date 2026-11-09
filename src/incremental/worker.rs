@@ -157,6 +157,63 @@ pub(super) struct Worker<C> {
     pub stop: Arc<StopSignal>,
 }
 
+// Primes the circuit, answers the registration, and then applies batches until the query stops.
+async fn serve<C: Circuit>(
+    circuit: &mut C,
+    basis: TxKey,
+    registration: &mut Option<(IncrementalQuerySubscription, Registration)>,
+    inbox: &mut mpsc::Receiver<Arc<Batch>>,
+    sender: &mpsc::Sender<IncrementalQueryDelta>,
+    stop: &StopSignal,
+) -> Result<()> {
+    if stop.token.is_cancelled() {
+        return Ok(());
+    }
+    let rows = circuit.prime(basis).await?;
+    if stop.token.is_cancelled() {
+        return Ok(());
+    }
+    if !rows.is_empty() {
+        sender
+            .try_send(IncrementalQueryDelta {
+                tx_key: basis,
+                rows,
+            })
+            .expect("new subscription queue has room for priming");
+    }
+    let (subscription, response) = registration.take().expect("priming registration");
+    if response.send(Ok(subscription)).is_err() {
+        return Ok(());
+    }
+    loop {
+        let batch = tokio::select! {
+            biased;
+            _ = stop.token.cancelled() => break,
+            _ = sender.closed() => break,
+            batch = inbox.recv() => match batch { Some(batch) => batch, None => break },
+        };
+        if !circuit.matches(&batch) {
+            continue;
+        }
+        // A started step always finishes; stopping takes effect between steps.
+        let rows = circuit.apply(&batch).await?;
+        if stop.token.is_cancelled() {
+            break;
+        }
+        if rows.is_empty() {
+            continue;
+        }
+        tokio::select! {
+            biased;
+            _ = stop.token.cancelled() => break,
+            result = sender.send(IncrementalQueryDelta { tx_key: batch.tx_key, rows }) => {
+                if result.is_err() { break; }
+            }
+        }
+    }
+    Ok(())
+}
+
 impl<C: Circuit> Worker<C> {
     pub async fn run(
         self,
@@ -170,66 +227,32 @@ impl<C: Circuit> Worker<C> {
             sender,
             stop,
         } = self;
-        let mut circuit = None;
         let basis = subscription.tx_key;
         let mut registration = Some((subscription, response));
-        let execution = async {
-            let build_path = storage_path.clone();
-            let built = tokio::task::spawn_blocking(move || build(&build_path))
-                .await
-                .context("Incremental query build task panicked")??;
-            let circuit = circuit.insert(built);
-            if stop.token.is_cancelled() {
-                return Ok(());
-            }
-            let rows = circuit.prime(basis).await?;
-            if stop.token.is_cancelled() {
-                return Ok(());
-            }
-            if !rows.is_empty() {
-                sender
-                    .try_send(IncrementalQueryDelta {
-                        tx_key: basis,
-                        rows,
-                    })
-                    .expect("new subscription queue has room for priming");
-            }
-            let (subscription, response) = registration.take().expect("priming registration");
-            if response.send(Ok(subscription)).is_err() {
-                return Ok(());
-            }
-            loop {
-                let batch = tokio::select! {
-                    biased;
-                    _ = stop.token.cancelled() => break,
-                    _ = sender.closed() => break,
-                    batch = inbox.recv() => match batch { Some(batch) => batch, None => break },
+        let build_path = storage_path.clone();
+        // A panic in the build becomes a join error, so only serving needs catch_unwind.
+        let built = tokio::task::spawn_blocking(move || build(&build_path))
+            .await
+            .context("Incremental query build task panicked")
+            .and_then(|built| built);
+        let (circuit, error) = match built {
+            Ok(mut circuit) => {
+                let served = serve(
+                    &mut circuit,
+                    basis,
+                    &mut registration,
+                    &mut inbox,
+                    &sender,
+                    &stop,
+                );
+                // The circuit outlives a panic, so the cleanup still destroys it on a blocking thread.
+                let error = match AssertUnwindSafe(served).catch_unwind().await {
+                    Ok(result) => result.err(),
+                    Err(_) => Some(anyhow!("Incremental query worker panicked")),
                 };
-                if !circuit.matches(&batch) {
-                    continue;
-                }
-                // A started step always finishes; stopping takes effect between steps.
-                let rows = circuit.apply(&batch).await?;
-                if stop.token.is_cancelled() {
-                    break;
-                }
-                if rows.is_empty() {
-                    continue;
-                }
-                tokio::select! {
-                    biased;
-                    _ = stop.token.cancelled() => break,
-                    result = sender.send(IncrementalQueryDelta { tx_key: batch.tx_key, rows }) => {
-                        if result.is_err() { break; }
-                    }
-                }
+                (Some(circuit), error)
             }
-            Ok::<_, anyhow::Error>(())
-        };
-        let result = AssertUnwindSafe(execution).catch_unwind().await;
-        let error = match result {
-            Ok(result) => result.err(),
-            Err(_) => Some(anyhow!("Incremental query worker panicked")),
+            Err(error) => (None, Some(error)),
         };
         // The registration is still open if the worker stopped before priming finished.
         let failure = match (registration, error) {
