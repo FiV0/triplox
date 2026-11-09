@@ -98,7 +98,8 @@ impl<L: TxLog> Node<L> {
             indexer.clone(),
             cdc_poll_interval,
             incremental_config,
-        );
+        )
+        .await?;
 
         // Wait for catch-up to complete if there are un-indexed transactions
         if let Some((tx_key, waiter)) = last_tx_key.zip(waiter) {
@@ -152,7 +153,9 @@ impl Node<MemoryLog> {
             indexer.clone(),
             DEFAULT_LOCAL_CDC_POLL_INTERVAL,
             incremental_config,
-        );
+        )
+        .await
+        .unwrap();
 
         Node {
             log,

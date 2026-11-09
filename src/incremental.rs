@@ -144,17 +144,32 @@ struct CdcSource {
     commands: mpsc::WeakUnboundedSender<IncrementalCommand>,
 }
 
+// Starts on a blocking thread, as the pool spawns its DBSP worker and merger threads.
+async fn start_pool(config: IncrementalConfig) -> Result<RuntimePool> {
+    tokio::task::spawn_blocking(move || {
+        RuntimePool::start(
+            PoolConfig::with_threads(config.threads.get())
+                .with_merger_threads(config.merger_threads.get().into())
+                .with_max_rss_bytes(*circuit::MAX_RSS_BYTES)
+                .with_cache_mib(config.cache_mib.get()),
+        )
+    })
+    .await
+    .context("Incremental runtime pool startup task panicked")?
+    .context("Incremental runtime pool failed to start")
+}
+
 // The two result levels in this service have two different meanings.
 // The first level is about the communication of this service.
 // The second level reports errors while processing a command.
 impl IncrementalQueryService {
-    pub(crate) fn new(
+    pub(crate) async fn new(
         storage_root: PathBuf,
         cancel: CancellationToken,
         slate: &SlateComponents,
         indexer: Arc<RwLock<Indexer>>,
         cdc_poll_interval: Duration,
-    ) -> Self {
+    ) -> Result<Self> {
         Self::new_with_runtime(
             storage_root,
             cancel,
@@ -163,16 +178,17 @@ impl IncrementalQueryService {
             cdc_poll_interval,
             IncrementalConfig::default(),
         )
+        .await
     }
 
-    pub(crate) fn new_with_runtime(
+    pub(crate) async fn new_with_runtime(
         storage_root: PathBuf,
         cancel: CancellationToken,
         slate: &SlateComponents,
         indexer: Arc<RwLock<Indexer>>,
         cdc_poll_interval: Duration,
         config: IncrementalConfig,
-    ) -> Self {
+    ) -> Result<Self> {
         Self::new_with_options(
             storage_root,
             cancel,
@@ -181,19 +197,22 @@ impl IncrementalQueryService {
             cdc_poll_interval,
             IncrementalQueryOptions::for_config(config),
         )
+        .await
     }
 
     // Spawns the dispatcher on the current Tokio runtime, so this must run inside one.
-    fn new_with_options(
+    async fn new_with_options(
         storage_root: PathBuf,
         cancel: CancellationToken,
         slate: &SlateComponents,
         indexer: Arc<RwLock<Indexer>>,
         cdc_poll_interval: Duration,
         options: IncrementalQueryOptions,
-    ) -> Self {
+    ) -> Result<Self> {
+        let pool = start_pool(options.config).await?;
         let (sender, receiver) = mpsc::unbounded_channel();
         let inner = IncrementalQueryServiceInner::new(
+            pool,
             storage_root,
             cancel.child_token(),
             options,
@@ -208,11 +227,11 @@ impl IncrementalQueryService {
         );
         tokio::spawn(inner.run(receiver));
 
-        Self {
+        Ok(Self {
             commands: sender,
             indexer,
             retire_timeout: options.retire_timeout,
-        }
+        })
     }
 
     // The plan uses the schema at call time and the dispatcher reads the basis later.
@@ -274,7 +293,7 @@ struct RegisteredQuery {
 type Registration = oneshot::Sender<Result<IncrementalQuerySubscription>>;
 
 struct IncrementalQueryServiceInner {
-    pool: Option<RuntimePool>,
+    pool: RuntimePool,
     next_query_id: u64,
     storage_root: PathBuf,
     queries: HashMap<IncrementalQueryHandle, RegisteredQuery>,
@@ -294,6 +313,7 @@ struct IncrementalQueryServiceInner {
 
 impl IncrementalQueryServiceInner {
     fn new(
+        pool: RuntimePool,
         storage_root: PathBuf,
         cancel: CancellationToken,
         options: IncrementalQueryOptions,
@@ -303,7 +323,7 @@ impl IncrementalQueryServiceInner {
     ) -> Self {
         let (completed, completions) = mpsc::unbounded_channel();
         Self {
-            pool: None,
+            pool,
             next_query_id: 1,
             storage_root,
             queries: HashMap::new(),
@@ -412,17 +432,16 @@ impl IncrementalQueryServiceInner {
                 }
             }
         }
-        if let Some(pool) = self.pool.take() {
-            let result = tokio::task::spawn_blocking(move || {
-                pool.shutdown()
-                    .map_err(|_| anyhow!("Incremental runtime pool shutdown panicked"))
-            })
-            .await
-            .context("Incremental runtime pool shutdown task panicked")
-            .and_then(|result| result);
-            if cleanup.is_ok() {
-                cleanup = result;
-            }
+        let pool = self.pool.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            pool.shutdown()
+                .map_err(|_| anyhow!("Incremental runtime pool shutdown panicked"))
+        })
+        .await
+        .context("Incremental runtime pool shutdown task panicked")
+        .and_then(|result| result);
+        if cleanup.is_ok() {
+            cleanup = result;
         }
         let result = match (cdc_result, cleanup) {
             (Ok(()), Ok(())) => Ok(()),
@@ -498,26 +517,6 @@ impl IncrementalQueryServiceInner {
         handle
     }
 
-    // The pool starts with the first query, so nodes without incremental queries spawn no DBSP threads.
-    async fn pool(&mut self) -> Result<RuntimePool> {
-        if let Some(pool) = &self.pool {
-            return Ok(pool.clone());
-        }
-        let config = self.options.config;
-        let pool = tokio::task::spawn_blocking(move || {
-            RuntimePool::start(
-                PoolConfig::with_threads(config.threads.get())
-                    .with_merger_threads(config.merger_threads.get().into())
-                    .with_max_rss_bytes(*circuit::MAX_RSS_BYTES)
-                    .with_cache_mib(config.cache_mib.get()),
-            )
-        })
-        .await
-        .context("Incremental runtime pool startup task panicked")??;
-        self.pool = Some(pool.clone());
-        Ok(pool)
-    }
-
     async fn start_registration(
         &mut self,
         plan: IncrementalQueryPlan,
@@ -528,13 +527,7 @@ impl IncrementalQueryServiceInner {
             let _ = response.send(Err(anyhow!("Incremental query service stopped")));
             return;
         }
-        let pool = match self.pool().await {
-            Ok(pool) => pool,
-            Err(error) => {
-                let _ = response.send(Err(error));
-                return;
-            }
-        };
+        let pool = self.pool.clone();
         self.start_cdc();
         let db = self.db.clone();
         let scans = initial_scans(&plan);
@@ -667,7 +660,7 @@ mod tests {
             .is_some()
     }
 
-    fn small_pool_config() -> IncrementalConfig {
+    pub(super) fn small_pool_config() -> IncrementalConfig {
         IncrementalConfig {
             threads: NonZeroUsize::new(2).unwrap(),
             merger_threads: std::num::NonZeroU16::MIN,
@@ -709,7 +702,7 @@ mod tests {
     }
 
     // The registrations of this service have basis 1 until `set_basis` changes it.
-    fn service_on(
+    async fn service_on(
         slate: SlateComponents,
         dir: &Path,
         options: IncrementalQueryOptions,
@@ -724,6 +717,8 @@ mod tests {
             Duration::from_millis(10),
             options,
         )
+        .await
+        .unwrap()
     }
 
     async fn service_with_names(dir: &Path, names: &[(i64, &str)]) -> IncrementalQueryService {
@@ -732,6 +727,7 @@ mod tests {
             dir,
             IncrementalQueryOptions::default(),
         )
+        .await
     }
 
     async fn service_at(dir: &Path) -> IncrementalQueryService {
@@ -798,6 +794,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let slate = slate_with_names(&[(42, "Alice")]).await;
         let mut inner = IncrementalQueryServiceInner::new(
+            start_pool(small_pool_config()).await.unwrap(),
             dir.path().into(),
             CancellationToken::new(),
             IncrementalQueryOptions {
@@ -811,7 +808,7 @@ mod tests {
         let basis = test_tx_key_with_tx_id(1);
         let mut first = register_inline(&mut inner, single_pattern_plan(), basis).await;
         let mut second = register_inline(&mut inner, single_pattern_plan(), basis).await;
-        let pool = inner.pool.as_ref().unwrap().clone();
+        let pool = inner.pool.clone();
         assert_eq!(pool.stats().registered_circuits, 2);
         assert_eq!(pool.stats().foreground_threads, 2);
         assert_eq!(pool.stats().merger_threads, 1);
@@ -866,7 +863,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let slate = slate_with_names(&[(42, "Alice")]).await;
         let db = slate.db.clone();
-        let service = service_on(slate, dir.path(), IncrementalQueryOptions::default());
+        let service = service_on(slate, dir.path(), IncrementalQueryOptions::default()).await;
         let mut primed = register(&service, single_pattern_plan()).await;
         // Alice comes after this basis, so the priming result is empty.
         set_basis(&service, db, 0).await;
@@ -956,7 +953,8 @@ mod tests {
                 inbox_capacity: NonZeroUsize::MIN,
                 ..IncrementalQueryOptions::default()
             },
-        );
+        )
+        .await;
         set_basis(&service, db, 1000).await;
         let mut query = register(&service, single_pattern_plan()).await;
         for seq in 1..=1000 {
@@ -984,7 +982,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let slate = crate::slate::in_memory_slate().await;
         let db = slate.db.clone();
-        let service = service_on(slate, dir.path(), IncrementalQueryOptions::default());
+        let service = service_on(slate, dir.path(), IncrementalQueryOptions::default()).await;
         set_basis(&service, db.clone(), 0).await;
         let mut before = register(&service, single_pattern_plan()).await;
         set_basis(&service, db, 2).await;

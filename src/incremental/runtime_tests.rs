@@ -1,4 +1,4 @@
-use super::tests::apply_batch;
+use super::tests::{apply_batch, small_pool_config};
 use super::worker::test_support::single_batch;
 use super::*;
 use dbsp::utils::Tup2;
@@ -65,6 +65,7 @@ impl Fixture {
         let storage = tempfile::tempdir().unwrap();
         let slate = crate::slate::in_memory_slate().await;
         let inner = IncrementalQueryServiceInner::new(
+            start_pool(small_pool_config()).await.unwrap(),
             storage.path().to_path_buf(),
             CancellationToken::new(),
             IncrementalQueryOptions {
