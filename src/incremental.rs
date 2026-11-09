@@ -135,6 +135,7 @@ pub(crate) struct IncrementalQueryService {
     indexer: Arc<RwLock<Indexer>>,
     retire_timeout: Duration,
     cdc_cancel: CancellationToken,
+    // TODO: remove the option
     cdc_task: Option<JoinHandle<Result<()>>>,
 }
 
