@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use dbsp::{utils::Tup2, ZWeight};
 use edn::kw;
 use futures::{stream, StreamExt, TryStreamExt};
@@ -142,7 +142,11 @@ async fn run_cdc_loop(
         // Shutdown joins this task before it stops the dispatcher, so the cancel also ends the wait.
         tokio::select! {
             _ = cancel.cancelled() => break,
-            ack = ack => if ack.is_err() { break },
+            ack = ack => if ack.is_err() {
+                // A dropped service cancels first; otherwise the dispatcher died unexpectedly.
+                if cancel.is_cancelled() { break }
+                bail!("Incremental query dispatcher stopped before routing a CDC batch");
+            },
         }
     }
 
