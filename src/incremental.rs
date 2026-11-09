@@ -323,9 +323,8 @@ struct IncrementalQueryServiceInner {
     queries: HashMap<IncrementalQueryHandle, RegisteredQuery>,
     cancel: CancellationToken,
     options: IncrementalQueryOptions,
-    // Workers scan this database to prime their circuits.
+    // Prmining happens on workers, so we need the db and the indexer.
     db: Arc<slatedb::Db>,
-    // Gives the registration basis.
     indexer: Arc<RwLock<Indexer>>,
     // Sending end of worker retirement notifications. Each worker gets its own copy of this channel.
     completed: mpsc::UnboundedSender<Completion>,
