@@ -177,10 +177,7 @@ fn shutdown_result(cdc_result: Result<()>, cleanup: Result<()>) -> Result<()> {
 // The first level is about the communication of this service.
 // The second level reports errors while processing a command.
 impl IncrementalQueryService {
-    // Split from `new` mainly for tests: they need a service without a CDC task
-    // and send batches on the returned sender themselves. Production attaches CDC in `new`.
-    // Spawns the dispatcher on the current Tokio runtime, so this must run inside one.
-    // The dispatcher routes the batches sent on the returned sender.
+    // Tests call this without CDC and send batches on the returned sender themselves.
     async fn new_with_batch_sender(
         storage_root: PathBuf,
         cancel: &CancellationToken,
@@ -324,7 +321,7 @@ struct IncrementalQueryServiceInner {
     queries: HashMap<IncrementalQueryHandle, RegisteredQuery>,
     cancel: CancellationToken,
     options: IncrementalQueryOptions,
-    // Prmining happens on workers, so we need the db and the indexer.
+    // Workers prime their circuits, so they need the db and the indexer.
     db: Arc<slatedb::Db>,
     indexer: Arc<RwLock<Indexer>>,
     // Sending end of worker retirement notifications. Each worker gets its own copy of this channel.
@@ -469,12 +466,10 @@ impl IncrementalQueryServiceInner {
         response: Registration,
     ) -> IncrementalQueryHandle {
         let handle = self.allocate_query_id();
-        // communication between worker and subscritpion
+        // The worker sends output rows to the subscription on this channel.
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_OUTPUT_CAPACITY);
-        // reason for termination channel.
         let (terminal, termination) = oneshot::channel();
         let stop = Arc::new(StopSignal::new(self.cancel.child_token(), terminal));
-        // inbox channel
         let (inbox_sender, inbox) = mpsc::channel(self.options.inbox_capacity.get());
         let subscription = IncrementalQuerySubscription {
             handle,

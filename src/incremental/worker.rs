@@ -195,7 +195,7 @@ async fn serve<C: Circuit>(
         if !circuit.matches(&batch) {
             continue;
         }
-        // A started step always finishes; stopping takes effect between steps.
+        // A started step always finishes. A stop takes effect between steps.
         let rows = circuit.apply(&batch).await?;
         if stop.token.is_cancelled() {
             break;

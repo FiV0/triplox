@@ -17,7 +17,7 @@ pub struct Config {
     pub incremental: IncrementalConfig,
 }
 
-/// The DBSP runtime pool shared by all incremental queries; storage and CDC settings are independent.
+/// The DBSP runtime pool shared by all incremental queries. Storage and CDC settings are not part of it.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct IncrementalConfig {
