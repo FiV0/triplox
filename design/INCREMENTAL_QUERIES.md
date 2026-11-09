@@ -284,18 +284,18 @@ channel. The diagram that follows shows the tasks and the channels between them:
 │  ┌─ Dispatcher task ──────┼────────────────────────────────────────────────────────────┐   │
 │  │ registry: handle → { inbox, basis, control }                                        │   │
 │  │ Register:   basis = latest indexed TxKey                                            │   │
-│  │             new inbox ← Prime{basis, response}; insert; spawn Worker                │   │
-│  │ CdcBatch:   per query batch.after(basis) → inbox ← Apply(batch)   (full ⇒ Lagged)   │   │
+│  │             new inbox; insert; spawn Worker{basis, response}                        │   │
+│  │ CdcBatch:   per query batch.after(basis) → inbox ← batch   (full ⇒ Lagged)          │   │
 │  │ Unregister: control.terminate; reply on Completion                                  │   │
 │  └───────────────┬────────┼───────────────────────────────────────────▲────────────────┘   │
-│                  │ inbox  │ [Prime, Apply, Apply, …], bounded FIFO    │ Completion         │
+│                  │ inbox  │ [batch, batch, …], bounded FIFO           │ Completion         │
 │                  │        │ + control: stop, out of band              │                    │
 │                  ▼        │                                           │                    │
 │  ┌─ Worker task × N ──────┴───────────────────────────────────────────┴────────────────┐   │
 │  │ build circuit on the pool                       (spawn_blocking)                    │   │
+│  │ prime: scan at basis → step → emit(basis) → response                                │   │
 │  │ loop inbox:                                                                         │   │
-│  │   Prime{basis, response}  scan at basis → step → emit(basis) → response             │   │
-│  │   Apply(batch)            matches? → step → emit(batch.tx_key)                      │   │
+│  │   batch                   matches? → step → emit(batch.tx_key)                      │   │
 │  │ exit: drop circuit, rm storage (spawn_blocking) → Completion                        │   │
 │  └──────┬───────────────────────────────────┬──────────────────────────────────────────┘   │
 └─────────┼───────────────────────────────────┼──────────────────────────────────────────────┘
@@ -318,8 +318,7 @@ The runtime has these parts:
   file into one batch and sends the batch to the dispatcher. The service owns
   the task and stops it.
 - Each query has one worker task that owns the circuit of the query. The inbox
-  of the worker is a bounded FIFO (first in, first out) queue of `Prime` and
-  `Apply` messages.
+  of the worker is a bounded FIFO (first in, first out) queue of batches.
 - The DBSP `RuntimePool` runs the steps of all circuits on one shared set of
   threads.
 
@@ -335,17 +334,16 @@ registration. Registration has these steps:
    `Register{plan}` to the dispatcher.
 2. The dispatcher reads the latest indexed `TxKey` under the indexer read lock.
    This `TxKey` is the basis.
-3. The dispatcher creates the inbox and puts `Prime{basis, response}` in it as
-   the first message.
-4. The dispatcher adds the query to the registry and starts the worker.
+3. The dispatcher creates the inbox and adds the query to the registry.
+4. The dispatcher starts the worker with the basis and the response channel.
 5. The worker builds the circuit on the pool, on a blocking thread.
-6. The worker takes `Prime` from the inbox. It scans the snapshot at the basis
-   and steps the circuit with the snapshot triples.
+6. The worker scans the snapshot at the basis. It steps the circuit with the
+   snapshot triples.
 7. If the priming result is not empty, the worker sends it as the first delta.
 8. The worker sends `Ok(subscription)` on the response channel, and
    `register_query` returns the subscription.
 
-The response channel goes inside `Prime`. Thus, the worker replies to
+The worker gets the response channel when it starts. Thus, the worker replies to
 `register_query` directly, and the dispatcher does not wait for priming. If
 priming fails, the worker sends the error on the response channel, and the
 registration fails.
@@ -367,9 +365,9 @@ of its transaction. A batch goes through these steps:
 3. The CDC task sends a `CdcBatch` to the dispatcher and waits for the routing
    acknowledgement.
 4. For each query, the dispatcher removes the transactions at or before the
-   basis of the query. If transactions remain, it puts `Apply(batch)` in the
-   inbox of the query.
-5. The worker takes the next message from its inbox. If the batch has no triples
+   basis of the query. If transactions remain, it puts the batch in the inbox
+   of the query.
+5. The worker takes the next batch from its inbox. If the batch has no triples
    with the attributes of the query, the worker skips the step.
 6. Otherwise, the worker copies those triples into the circuit input and awaits
    the step.
@@ -388,10 +386,10 @@ the result of a circuit. Thus, a query without matching triples skips the step.
 ### Ordering
 
 The dispatcher does three actions in one step: it reads the basis, it creates
-the inbox with `Prime`, and it adds the query to the registry. The dispatcher
-handles one command or batch at a time. Thus, the dispatcher cannot route a
-batch between these three actions. No lock between registration and the CDC task
-is necessary.
+the inbox, and it adds the query to the registry. The dispatcher handles one
+command or batch at a time. Thus, the dispatcher cannot route a batch between
+these three actions. No lock between registration and the CDC task is
+necessary.
 
 A batch that the dispatcher routed before this step does not go to the new
 query. This is correct, because the batch contains only transactions at or
@@ -401,9 +399,10 @@ read lock covers each transaction in the WAL. The snapshot scan at the basis
 contains these transactions.
 
 The dispatcher trims each batch that it routes after this step against the
-basis. The remainder goes into the inbox behind `Prime`. The worker handles its
-inbox in FIFO order, and it sends all deltas of its query. Thus, the priming
-delta always comes before the deltas of WAL batches.
+basis. The remainder goes into the inbox. The worker does the priming before it
+reads its inbox. Then it handles the inbox in FIFO order, and it sends all
+deltas of its query. Thus, the priming delta always comes before the deltas of
+WAL batches.
 
 The basis can be in the middle of a WAL file. Transactions that are indexed but
 not yet flushed share a WAL file with later transactions. Thus, the CDC task can
@@ -415,7 +414,7 @@ transactions.
 
 A full result channel stops only the worker of that query. If the inbox of a
 query is full, the dispatcher stops routing to that query and stops the query
-with a lag error. The dispatcher discards the pending messages.
+with a lag error. The dispatcher discards the pending batches.
 
 During the circuit build and the snapshot scan, WAL batches wait in the inbox.
 If the priming is slow, the inbox can fill. The query then stops with a lag
@@ -475,7 +474,7 @@ For each WAL file, the CDC flow has these steps:
    acknowledgement.
 6. The dispatcher trims the batch for each query and puts the remainder in each
    inbox. If an inbox overflows, the dispatcher stops that query.
-7. The task continues with the next WAL file. The workers apply their messages
+7. The task continues with the next WAL file. The workers apply their batches
    independently and send the deltas that are not empty.
 
 The cursor advances as the task reads rows. It does not depend on the progress
@@ -565,7 +564,7 @@ The `[incremental]` configuration section sets the DBSP pool:
 
 `IncrementalQueryOptions` gives the other internal defaults:
 
-- Each inbox holds 256 messages. The worker can also hold one message that it
+- Each inbox holds 256 batches. The worker can also hold one batch that it
   already took. Overflow stops the query.
 - `SUBSCRIPTION_OUTPUT_CAPACITY` is 128 result batches. A full result queue applies
   backpressure to its own worker.

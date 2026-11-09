@@ -28,7 +28,7 @@ pub(crate) mod circuit;
 pub(crate) mod subscription;
 
 use subscription::{SubscriptionDeltas, SubscriptionLagged, Termination};
-use worker::{Batch, Build, Circuit, Completion, Control, Message, SnapshotCircuit, Worker};
+use worker::{Batch, Build, Circuit, Completion, Control, SnapshotCircuit, Worker};
 mod worker;
 
 const SUBSCRIPTION_OUTPUT_CAPACITY: usize = 128;
@@ -306,7 +306,7 @@ impl Drop for IncrementalQueryService {
 }
 
 struct RegisteredQuery {
-    inbox: mpsc::Sender<Message>,
+    inbox: mpsc::Sender<Arc<Batch>>,
     sender: mpsc::Sender<IncrementalQueryDelta>,
     control: Arc<Control>,
     basis: TxKey,
@@ -461,7 +461,7 @@ impl IncrementalQueryServiceInner {
         self.storage_root.join(format!("query-{id}"))
     }
 
-    // Registers the query and starts its worker. Batches routed from now on queue behind Prime.
+    // Registers the query and starts its worker. The worker primes before it reads queued batches.
     fn start_query<C: Circuit>(
         &mut self,
         basis: TxKey,
@@ -478,16 +478,6 @@ impl IncrementalQueryServiceInner {
             tx_key: basis,
             deltas: SubscriptionDeltas::new(receiver, termination),
         };
-        if inbox_sender
-            .try_send(Message::Prime {
-                basis,
-                subscription,
-                response,
-            })
-            .is_err()
-        {
-            unreachable!("new inbox has room for Prime");
-        }
         let worker = Worker {
             build,
             storage_path: self.query_storage_path(handle),
@@ -497,7 +487,7 @@ impl IncrementalQueryServiceInner {
         };
         let completed = self.completed.clone();
         tokio::spawn(async move {
-            let cleanup = worker.run().await;
+            let cleanup = worker.run(subscription, response).await;
             let _ = completed.send(Completion { handle, cleanup });
         });
         self.queries.insert(
@@ -551,7 +541,7 @@ impl IncrementalQueryServiceInner {
             let Some(batch) = batch.after(query.basis.tx_id) else {
                 continue;
             };
-            match query.inbox.try_send(Message::Apply(batch.clone())) {
+            match query.inbox.try_send(batch.clone()) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     query

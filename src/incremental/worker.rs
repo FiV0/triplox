@@ -158,27 +158,22 @@ pub(super) struct Completion {
     pub cleanup: Result<()>,
 }
 
-pub(super) enum Message {
-    Prime {
-        basis: TxKey,
-        subscription: IncrementalQuerySubscription,
-        response: Registration,
-    },
-    Apply(Arc<Batch>),
-}
-
 pub(super) type Build<C> = Box<dyn FnOnce(&Path) -> Result<C> + Send>;
 
 pub(super) struct Worker<C> {
     pub build: Build<C>,
     pub storage_path: PathBuf,
-    pub inbox: mpsc::Receiver<Message>,
+    pub inbox: mpsc::Receiver<Arc<Batch>>,
     pub sender: mpsc::Sender<IncrementalQueryDelta>,
     pub control: Arc<Control>,
 }
 
 impl<C: Circuit> Worker<C> {
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(
+        self,
+        subscription: IncrementalQuerySubscription,
+        response: Registration,
+    ) -> Result<()> {
         let Self {
             build,
             storage_path,
@@ -187,48 +182,39 @@ impl<C: Circuit> Worker<C> {
             control,
         } = self;
         let mut circuit = None;
-        // The subscription and the registration that priming answers, while priming runs.
-        let mut registration = None;
+        let basis = subscription.tx_key;
+        let mut registration = Some((subscription, response));
         let execution = async {
             let build_path = storage_path.clone();
             let built = tokio::task::spawn_blocking(move || build(&build_path))
                 .await
                 .context("Incremental query build task panicked")??;
             let circuit = circuit.insert(built);
+            if control.stop.is_cancelled() {
+                return Ok(());
+            }
+            let rows = circuit.prime(basis).await?;
+            if control.stop.is_cancelled() {
+                return Ok(());
+            }
+            if !rows.is_empty() {
+                sender
+                    .try_send(IncrementalQueryDelta {
+                        tx_key: basis,
+                        rows,
+                    })
+                    .expect("new subscription queue has room for priming");
+            }
+            let (subscription, response) = registration.take().expect("priming registration");
+            if response.send(Ok(subscription)).is_err() {
+                return Ok(());
+            }
             loop {
-                let message = tokio::select! {
+                let batch = tokio::select! {
                     biased;
                     _ = control.stop.cancelled() => break,
                     _ = sender.closed() => break,
-                    message = inbox.recv() => match message { Some(message) => message, None => break },
-                };
-                let batch = match message {
-                    Message::Prime {
-                        basis,
-                        subscription,
-                        response,
-                    } => {
-                        registration = Some((subscription, response));
-                        let rows = circuit.prime(basis).await?;
-                        if control.stop.is_cancelled() {
-                            break;
-                        }
-                        if !rows.is_empty() {
-                            sender
-                                .try_send(IncrementalQueryDelta {
-                                    tx_key: basis,
-                                    rows,
-                                })
-                                .expect("new subscription queue has room for priming");
-                        }
-                        let (subscription, response) =
-                            registration.take().expect("priming registration");
-                        if response.send(Ok(subscription)).is_err() {
-                            break;
-                        }
-                        continue;
-                    }
-                    Message::Apply(batch) => batch,
+                    batch = inbox.recv() => match batch { Some(batch) => batch, None => break },
                 };
                 if !circuit.matches(&batch) {
                     continue;
@@ -257,15 +243,7 @@ impl<C: Circuit> Worker<C> {
             Err(_) => Some(anyhow!("Incremental query worker panicked")),
         };
         // The registration is still open if the worker stopped before priming finished.
-        let pending = registration.or_else(|| match inbox.try_recv() {
-            Ok(Message::Prime {
-                subscription,
-                response,
-                ..
-            }) => Some((subscription, response)),
-            _ => None,
-        });
-        let answer = match (pending, error) {
+        let answer = match (registration, error) {
             (Some((_, response)), Some(error)) => Some((response, Err(error))),
             // The first item of a lagged subscription is the lag error.
             (Some((subscription, response)), None) if control.lagged() => {

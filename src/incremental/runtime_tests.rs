@@ -732,7 +732,7 @@ async fn shutdown_waits_for_pending_build_and_rejects_it() {
     assert!(!shutdown.is_finished());
     release.send(()).unwrap();
     shutdown.await.unwrap().unwrap();
-    // The worker stopped before it took Prime, so the response channel closed.
+    // The worker stopped before priming, so the response channel closed.
     assert!(registration.await.is_err());
     assert!(!storage_path.exists());
     tokio::time::timeout(Duration::from_secs(5), dispatcher)
@@ -782,10 +782,11 @@ async fn registration_panics_remove_storage_after_unwinding() {
 
 #[tokio::test]
 async fn batches_routed_during_build_follow_the_priming_delta() {
-    let mut fixture = Fixture::new(4).await;
+    let mut fixture = Fixture::new(2).await;
     let (release, registration, _) = fixture.gated_build(vec![(vec![DataType::Long(0)], 1)]);
     let first = fixture.apply(1);
     let second = fixture.apply(2);
+    assert!(!fixture.inner.queries[&1].control.stop.is_cancelled());
     release.send(()).unwrap();
     let mut query = tokio::time::timeout(Duration::from_secs(5), registration)
         .await
@@ -808,8 +809,9 @@ async fn batches_routed_during_build_follow_the_priming_delta() {
 async fn inbox_overflow_during_build_returns_lagged_subscription() {
     let mut fixture = Fixture::new(1).await;
     let (release, registration, _) = fixture.gated_build(vec![]);
-    // Prime fills the inbox while the build blocks.
-    let overflow = fixture.apply(1);
+    fixture.apply(1);
+    assert!(!fixture.inner.queries[&1].control.stop.is_cancelled());
+    let overflow = fixture.apply(2);
     release.send(()).unwrap();
     let mut query = tokio::time::timeout(Duration::from_secs(5), registration)
         .await
