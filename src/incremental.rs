@@ -469,9 +469,12 @@ impl IncrementalQueryServiceInner {
         response: Registration,
     ) -> IncrementalQueryHandle {
         let handle = self.allocate_query_id();
+        // communication between worker and subscritpion
         let (sender, receiver) = mpsc::channel(SUBSCRIPTION_OUTPUT_CAPACITY);
+        // reason for termination channel.
         let (terminal, termination) = oneshot::channel();
         let control = Arc::new(Control::new(self.cancel.child_token(), terminal));
+        // inbox channel
         let (inbox_sender, inbox) = mpsc::channel(self.options.inbox_capacity.get());
         let subscription = IncrementalQuerySubscription {
             handle,
