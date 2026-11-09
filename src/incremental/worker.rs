@@ -256,13 +256,16 @@ impl<C: Circuit> Worker<C> {
         };
         // The registration is still open if the worker stopped before priming finished.
         let failure = match (registration, error) {
+            // A build or serving error fails the registration with that error.
             (Some((_, response)), Some(error)) => Some((response, error)),
-            // A lag fails the registration with the lag error, which waits in the subscription.
+            // A stop without an error fails the registration only if it was a lag.
             (Some((mut subscription, response)), None) => match subscription.deltas.try_recv() {
+                // A lag fails the registration with the lag error, which waits in the subscription.
                 Ok(Err(lag)) => Some((response, lag)),
                 // Other stops close the response channel, so the registration fails.
                 _ => None,
             },
+            // The subscriber already holds the subscription, so an error reaches it as the termination.
             (None, error) => {
                 stop.terminate(error.map(Termination::Failed));
                 None
