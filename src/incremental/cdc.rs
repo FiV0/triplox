@@ -2,21 +2,21 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use dbsp::{utils::Tup2, ZWeight};
 use edn::kw;
 use futures::{stream, StreamExt, TryStreamExt};
 use log::info;
 use slatedb::object_store::ObjectStore;
 use slatedb::WalReader;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::codec::{self, Encode};
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot};
 use crate::incremental::worker::Batch;
-use crate::incremental::{EncodedTriple, IncrementalQueryService};
+use crate::incremental::{CdcBatch, EncodedTriple};
 use crate::indexer::{aev_key_to_parts, ave_key_to_parts, Indexer};
 use crate::ops::{DataType, Datom, DatomOp};
 use crate::partition::extract_counter;
@@ -90,12 +90,11 @@ fn batch_from_datoms(datoms: &[(i64, Datom)], schema: &Schema) -> Result<Batch> 
     ))
 }
 
-pub(crate) fn spawn_cdc_loop(
+pub(super) fn spawn_cdc_loop(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
     indexer: Arc<RwLock<Indexer>>,
-    service: IncrementalQueryService,
-    registration_gate: Arc<Mutex<()>>,
+    batches: mpsc::UnboundedSender<CdcBatch>,
     cancel: CancellationToken,
     poll_interval: Duration,
 ) -> JoinHandle<Result<()>> {
@@ -103,8 +102,7 @@ pub(crate) fn spawn_cdc_loop(
         object_path,
         object_store,
         indexer,
-        service,
-        registration_gate,
+        batches,
         cancel,
         poll_interval,
     ))
@@ -114,13 +112,17 @@ async fn run_cdc_loop(
     object_path: String,
     object_store: Arc<dyn ObjectStore>,
     indexer: Arc<RwLock<Indexer>>,
-    service: IncrementalQueryService,
-    registration_gate: Arc<Mutex<()>>,
+    batches: mpsc::UnboundedSender<CdcBatch>,
     cancel: CancellationToken,
     poll_interval: Duration,
 ) -> Result<()> {
     let wal_reader = WalReader::new(object_path, object_store);
-    let mut stream = CdcStream::new(wal_reader, CdcCursor::default(), poll_interval, cancel);
+    let mut stream = CdcStream::new(
+        wal_reader,
+        CdcCursor::default(),
+        poll_interval,
+        cancel.clone(),
+    );
 
     while let Some(batch) = stream.next_batch().await? {
         let schema = indexer.read().await.metadata().schema.clone();
@@ -129,9 +131,23 @@ async fn run_cdc_loop(
             continue;
         }
         let batch = batch_from_datoms(&datoms, &schema)?;
-        let _registration_guard = registration_gate.lock().await;
-        service.apply_batch(batch).await?;
-        // The registration gate is released before polling the next WAL file.
+        let (routed, ack) = oneshot::channel();
+        let batch = CdcBatch {
+            batch: Arc::new(batch),
+            routed,
+        };
+        if batches.send(batch).is_err() {
+            break;
+        }
+        // Shutdown joins this task before it stops the dispatcher, so the cancel also ends the wait.
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            ack = ack => if ack.is_err() {
+                // A dropped service cancels first; otherwise the dispatcher died unexpectedly.
+                if cancel.is_cancelled() { break }
+                bail!("Incremental query dispatcher stopped before routing a CDC batch");
+            },
+        }
     }
 
     info!("Incremental query CDC stream exited normally");
@@ -139,7 +155,7 @@ async fn run_cdc_loop(
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct InitialScan {
+pub(crate) struct InitialScan {
     attribute: i64,
     entity: Option<Vec<u8>>,
     value: Option<Vec<u8>>,
@@ -191,7 +207,7 @@ impl InitialScan {
     }
 }
 
-fn initial_scans(plan: &IncrementalQueryPlan) -> Vec<InitialScan> {
+pub(crate) fn initial_scans(plan: &IncrementalQueryPlan) -> Vec<InitialScan> {
     let mut scans = plan
         .leaf_patterns()
         .into_iter()
@@ -280,13 +296,14 @@ const MAX_CONCURRENT_INITIAL_SCANS: usize = 8;
 
 pub(crate) async fn scan_current_triples<D>(
     db: &D,
-    plan: &IncrementalQueryPlan,
+    scans: &[InitialScan],
     as_of_tx_eid: i64,
 ) -> Result<Vec<Tup2<EncodedTriple, ZWeight>>>
 where
     D: slatedb::DbReadOps + Sync,
 {
-    let latest_by_triple = stream::iter(initial_scans(plan))
+    // Owned scans keep the stream future Send.
+    let latest_by_triple = stream::iter(scans.to_vec())
         .map(|scan| async move { scan_latest_triples(db, &scan, as_of_tx_eid).await })
         .buffer_unordered(MAX_CONCURRENT_INITIAL_SCANS)
         // Overlapping scans contribute each live triple only once.
@@ -308,25 +325,57 @@ where
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Arc;
+
+    use tokio::sync::RwLock;
+
+    use crate::inc_query::test_support::test_schema;
+    use crate::indexer::{Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
+    use crate::metadata::{Metadata, PartitionMap};
+    use crate::ops::Datom;
+    use crate::transaction::TxKey;
+
+    // An indexer whose latest indexed transaction is `basis`.
+    pub(crate) fn indexer_at(db: Arc<slatedb::Db>, basis: TxKey) -> Indexer {
+        Indexer::new(
+            db,
+            Metadata::new(test_schema(), PartitionMap::new()),
+            basis,
+            DEFAULT_TX_COMPLETION_CAPACITY,
+        )
+    }
+
+    pub(crate) fn test_indexer(db: Arc<slatedb::Db>) -> Arc<RwLock<Indexer>> {
+        Arc::new(RwLock::new(indexer_at(
+            db,
+            *crate::bootstrap::BOOTSTRAP_TX_KEY,
+        )))
+    }
+
+    // Writes the index entries of `datoms` as transaction entity `tx_eid` of the test schema.
+    pub(crate) async fn write_scan_datoms(db: &slatedb::Db, tx_eid: i64, datoms: &[Datom]) {
+        let mut batch = slatedb::WriteBatch::new();
+        crate::indexer::write_index_entries(&mut batch, datoms, &test_schema(), tx_eid).unwrap();
+        db.write(batch).await.unwrap();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use edn::kw;
-    use tokio::sync::{Mutex, RwLock};
+    use tokio::sync::RwLock;
     use tokio_util::sync::CancellationToken;
 
+    use super::test_support::write_scan_datoms;
     use super::*;
     use crate::clock::{st_from_unix_epoch, Instant};
     use crate::inc_query::test_support::{query_plan, test_schema, AGE_ATTR_ID, NAME_ATTR_ID};
     use crate::indexer::{Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
     use crate::metadata::{Metadata, PartitionMap};
     use crate::partition::tx_eid_from_tx_id;
-
-    async fn write_scan_datoms(db: &slatedb::Db, tx: i64, datoms: &[Datom]) {
-        let mut batch = slatedb::WriteBatch::new();
-        crate::indexer::write_index_entries(&mut batch, datoms, &test_schema(), tx).unwrap();
-        db.write(batch).await.unwrap();
-    }
 
     fn scan_datom(entity: i64, attribute: edn::Keyword, value: DataType, op: DatomOp) -> Datom {
         Datom {
@@ -413,9 +462,10 @@ mod tests {
         ] {
             let plan = query_plan(query);
             for (basis, live) in by_basis.into_iter().enumerate() {
-                let mut actual = scan_current_triples(slate.db.as_ref(), &plan, basis as i64)
-                    .await
-                    .unwrap();
+                let mut actual =
+                    scan_current_triples(slate.db.as_ref(), &initial_scans(&plan), basis as i64)
+                        .await
+                        .unwrap();
                 actual.sort();
                 let live = live
                     .into_iter()
@@ -525,19 +575,8 @@ mod tests {
     #[tokio::test]
     async fn cdc_loop_exits_ok_when_cancelled() {
         let slate = crate::slate::in_memory_slate().await;
-        let indexer = Arc::new(RwLock::new(Indexer::new(
-            slate.db.clone(),
-            Metadata::new(test_schema(), PartitionMap::new()),
-            *crate::bootstrap::BOOTSTRAP_TX_KEY,
-            DEFAULT_TX_COMPLETION_CAPACITY,
-        )));
-        let service = IncrementalQueryService::new(
-            tempfile::tempdir().unwrap().path().to_path_buf(),
-            CancellationToken::new(),
-            slate.object_path.clone(),
-            slate.object_store.clone(),
-            Duration::from_micros(250),
-        );
+        let indexer = test_support::test_indexer(slate.db.clone());
+        let (batches, _receiver) = mpsc::unbounded_channel();
         let cancel = CancellationToken::new();
         cancel.cancel();
 
@@ -545,14 +584,66 @@ mod tests {
             slate.object_path,
             slate.object_store,
             indexer,
-            service,
-            Arc::new(Mutex::new(())),
+            batches,
             cancel,
             Duration::from_micros(250),
         )
         .await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn cdc_loop_cancel_ends_wait_for_routing_ack() {
+        let slate = crate::slate::in_memory_slate().await;
+        let schema = crate::schema::bootstrap_schema();
+        let mut batch = slatedb::WriteBatch::new();
+        crate::indexer::write_index_entries(
+            &mut batch,
+            &[tx_instant(1, st_from_unix_epoch(123))],
+            &schema,
+            tx_eid_from_tx_id(1),
+        )
+        .unwrap();
+        slate.db.write(batch).await.unwrap();
+        slate
+            .db
+            .flush_with_options(slatedb::config::FlushOptions {
+                flush_type: slatedb::config::FlushType::Wal,
+            })
+            .await
+            .unwrap();
+        let indexer = Arc::new(RwLock::new(Indexer::new(
+            slate.db.clone(),
+            Metadata::new(schema, PartitionMap::new()),
+            *crate::bootstrap::BOOTSTRAP_TX_KEY,
+            DEFAULT_TX_COMPLETION_CAPACITY,
+        )));
+        let (batches, mut receiver) = mpsc::unbounded_channel();
+        let cancel = CancellationToken::new();
+        let cdc = tokio::spawn(run_cdc_loop(
+            slate.object_path,
+            slate.object_store,
+            indexer,
+            batches,
+            cancel.clone(),
+            Duration::from_micros(250),
+        ));
+
+        // The routing ack never comes, so only the cancel can end the loop.
+        let CdcBatch { batch, routed } =
+            tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(batch.tx_key.tx_id, 1);
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(5), cdc)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        drop(routed);
     }
 
     fn tx_instant(tx_id: i64, instant: Instant) -> Datom {

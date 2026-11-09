@@ -1,19 +1,25 @@
+use std::future::Future;
 use std::io::ErrorKind;
 use std::panic::AssertUnwindSafe;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
 use dbsp::{utils::Tup2, ZWeight};
 use futures::FutureExt;
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use triplox_client::transaction::TxKey;
 
+use super::cdc::{scan_current_triples, InitialScan};
 use super::circuit::QueryCircuit;
 use super::subscription::Termination;
-use super::{EncodedTriple, IncrementalQueryDelta, IncrementalQueryHandle};
+use super::{
+    EncodedTriple, IncrementalQueryDelta, IncrementalQueryHandle, IncrementalQuerySubscription,
+    Registration,
+};
 use crate::ops::DataType;
+use crate::partition::tx_eid_from_tx_id;
 
 pub(super) type Rows = Vec<(Vec<DataType>, isize)>;
 
@@ -44,13 +50,6 @@ impl Batch {
             tx_ids,
             first_tx_id,
         }
-    }
-
-    /// A batch holding a single transaction.
-    #[cfg(test)]
-    pub fn single(tx_key: TxKey, triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Self {
-        let tx_ids = vec![tx_key.tx_id; triples.len()];
-        Self::new(tx_key, triples, tx_ids)
     }
 
     pub fn triples(&self) -> &[Tup2<EncodedTriple, ZWeight>] {
@@ -87,41 +86,59 @@ impl Batch {
 }
 
 pub(super) trait Circuit: Send + 'static {
+    fn prime(&mut self, basis: TxKey) -> impl Future<Output = Result<Rows>> + Send;
     fn matches(&self, batch: &Batch) -> bool;
-    fn apply(&mut self, batch: &Batch) -> Result<Rows>;
+    fn apply(&mut self, batch: &Batch) -> impl Future<Output = Result<Rows>> + Send;
 }
 
-impl Circuit for QueryCircuit {
+// A query circuit that primes from a snapshot scan of SlateDB.
+pub(super) struct SnapshotCircuit {
+    pub circuit: QueryCircuit,
+    pub db: Arc<slatedb::Db>,
+    pub scans: Vec<InitialScan>,
+}
+
+impl Circuit for SnapshotCircuit {
+    async fn prime(&mut self, basis: TxKey) -> Result<Rows> {
+        let triples = scan_current_triples(
+            self.db.as_ref(),
+            &self.scans,
+            tx_eid_from_tx_id(basis.tx_id),
+        )
+        .await?;
+        self.circuit.prime(triples).await
+    }
+
     fn matches(&self, batch: &Batch) -> bool {
-        self.matches(batch)
+        self.circuit.matches(batch)
     }
 
-    fn apply(&mut self, batch: &Batch) -> Result<Rows> {
-        self.apply(batch)
+    fn apply(&mut self, batch: &Batch) -> impl Future<Output = Result<Rows>> + Send {
+        self.circuit.apply(batch)
     }
 }
 
-pub(super) struct Control {
-    pub stop: CancellationToken,
+// Stops a query once and sends the first stop reason to its subscription.
+pub(super) struct StopSignal {
+    pub token: CancellationToken,
     terminal: Mutex<Option<oneshot::Sender<Termination>>>,
 }
 
-impl Control {
-    pub fn new(stop: CancellationToken, terminal: oneshot::Sender<Termination>) -> Self {
+impl StopSignal {
+    pub fn new(token: CancellationToken, terminal: oneshot::Sender<Termination>) -> Self {
         Self {
-            stop,
+            token,
             terminal: Mutex::new(Some(terminal)),
         }
     }
 
+    // Sends the reason before it cancels, so a worker that sees the stop can read the reason.
     pub fn terminate(&self, reason: Option<Termination>) {
         let mut terminal = self.terminal.lock().unwrap();
-        self.stop.cancel();
-        if let Some(sender) = terminal.take() {
-            if let Some(reason) = reason {
-                let _ = sender.send(reason);
-            }
+        if let (Some(sender), Some(reason)) = (terminal.take(), reason) {
+            let _ = sender.send(reason);
         }
+        self.token.cancel();
     }
 }
 
@@ -130,92 +147,135 @@ pub(super) struct Completion {
     pub cleanup: Result<()>,
 }
 
+pub(super) type Build<C> = Box<dyn FnOnce(&Path) -> Result<C> + Send>;
+
 pub(super) struct Worker<C> {
-    pub circuit: C,
+    pub build: Build<C>,
     pub storage_path: PathBuf,
     pub inbox: mpsc::Receiver<Arc<Batch>>,
     pub sender: mpsc::Sender<IncrementalQueryDelta>,
-    pub control: Arc<Control>,
-    pub steps: Arc<Semaphore>,
+    pub stop: Arc<StopSignal>,
+}
+
+// Primes the circuit, answers the registration, and then applies batches until the query stops.
+async fn serve<C: Circuit>(
+    circuit: &mut C,
+    basis: TxKey,
+    registration: &mut Option<(IncrementalQuerySubscription, Registration)>,
+    inbox: &mut mpsc::Receiver<Arc<Batch>>,
+    sender: &mpsc::Sender<IncrementalQueryDelta>,
+    stop: &StopSignal,
+) -> Result<()> {
+    if stop.token.is_cancelled() {
+        return Ok(());
+    }
+    let rows = circuit.prime(basis).await?;
+    if stop.token.is_cancelled() {
+        return Ok(());
+    }
+    if !rows.is_empty() {
+        sender
+            .try_send(IncrementalQueryDelta {
+                tx_key: basis,
+                rows,
+            })
+            .expect("new subscription queue has room for priming");
+    }
+    let (subscription, response) = registration.take().expect("priming registration");
+    if response.send(Ok(subscription)).is_err() {
+        return Ok(());
+    }
+    loop {
+        let batch = tokio::select! {
+            biased;
+            _ = stop.token.cancelled() => break,
+            _ = sender.closed() => break,
+            batch = inbox.recv() => match batch { Some(batch) => batch, None => break },
+        };
+        if !circuit.matches(&batch) {
+            continue;
+        }
+        // A started step always finishes. A stop takes effect between steps.
+        let rows = circuit.apply(&batch).await?;
+        if stop.token.is_cancelled() {
+            break;
+        }
+        if rows.is_empty() {
+            continue;
+        }
+        tokio::select! {
+            biased;
+            _ = stop.token.cancelled() => break,
+            result = sender.send(IncrementalQueryDelta { tx_key: batch.tx_key, rows }) => {
+                if result.is_err() { break; }
+            }
+        }
+    }
+    Ok(())
 }
 
 impl<C: Circuit> Worker<C> {
-    pub async fn run(self) -> Result<()> {
+    pub async fn run(
+        self,
+        subscription: IncrementalQuerySubscription,
+        response: Registration,
+    ) -> Result<()> {
         let Self {
-            circuit,
+            build,
             storage_path,
             mut inbox,
             sender,
-            control,
-            steps,
+            stop,
         } = self;
-        // Only blocking jobs step or destroy the circuit, including after a panic.
-        let circuit = Arc::new(Mutex::new(Some(circuit)));
-        let execution = async {
-            loop {
-                let batch = tokio::select! {
-                    biased;
-                    _ = control.stop.cancelled() => break,
-                    _ = sender.closed() => break,
-                    batch = inbox.recv() => match batch { Some(batch) => batch, None => break },
+        let basis = subscription.tx_key;
+        let mut registration = Some((subscription, response));
+        let build_path = storage_path.clone();
+        // A panic in the build becomes a join error, so only serving needs catch_unwind.
+        let built = tokio::task::spawn_blocking(move || build(&build_path))
+            .await
+            .context("Incremental query build task panicked")
+            .and_then(|built| built);
+        let (circuit, error) = match built {
+            Ok(mut circuit) => {
+                let served = serve(
+                    &mut circuit,
+                    basis,
+                    &mut registration,
+                    &mut inbox,
+                    &sender,
+                    &stop,
+                );
+                // The circuit outlives a panic, so the cleanup still destroys it on a blocking thread.
+                let error = match AssertUnwindSafe(served).catch_unwind().await {
+                    Ok(result) => result.err(),
+                    Err(_) => Some(anyhow!("Incremental query worker panicked")),
                 };
-                if !circuit.lock().unwrap().as_ref().unwrap().matches(&batch) {
-                    continue;
-                }
-                let permit = tokio::select! {
-                    biased;
-                    _ = control.stop.cancelled() => break,
-                    _ = sender.closed() => break,
-                    permit = steps.clone().acquire_owned() => permit?,
-                };
-                let tx_key = batch.tx_key;
-                let job_circuit = circuit.clone();
-                let stop = control.stop.clone();
-                let rows = tokio::task::spawn_blocking(move || {
-                    let _permit = permit;
-                    if stop.is_cancelled() {
-                        return Ok(None);
-                    }
-                    job_circuit
-                        .lock()
-                        .unwrap()
-                        .as_mut()
-                        .unwrap()
-                        .apply(&batch)
-                        .map(Some)
-                })
-                .await
-                .context("Incremental query apply task panicked")??;
-                let Some(rows) = rows else { break };
-                if control.stop.is_cancelled() {
-                    break;
-                }
-                if rows.is_empty() {
-                    continue;
-                }
-                tokio::select! {
-                    biased;
-                    _ = control.stop.cancelled() => break,
-                    result = sender.send(IncrementalQueryDelta { tx_key, rows }) => {
-                        if result.is_err() { break; }
-                    }
-                }
+                (Some(circuit), error)
             }
-            Ok::<_, anyhow::Error>(())
+            Err(error) => (None, Some(error)),
         };
-        let result = AssertUnwindSafe(execution).catch_unwind().await;
-        let error = match result {
-            Ok(result) => result.err(),
-            Err(_) => Some(anyhow!("Incremental query worker panicked")),
+        // The registration is still open if the worker stopped before priming finished.
+        let failure = match (registration, error) {
+            // A build or serving error fails the registration with that error.
+            (Some((_, response)), Some(error)) => Some((response, error)),
+            // A stop without an error fails the registration only if it was a lag.
+            (Some((mut subscription, response)), None) => match subscription.deltas.try_recv() {
+                // A lag fails the registration with the lag error, which waits in the subscription.
+                Ok(Err(lag)) => Some((response, lag)),
+                // Other stops close the response channel, so the registration fails.
+                _ => None,
+            },
+            // The subscriber already holds the subscription, so an error reaches it as the termination.
+            (None, error) => {
+                stop.terminate(error.map(Termination::Failed));
+                None
+            }
         };
-        control.terminate(error.map(Termination::Failed));
+        stop.terminate(None);
         drop(inbox);
         drop(sender);
-        tokio::task::spawn_blocking(move || {
-            let circuit = circuit
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .take();
+        // Circuit destruction waits on the pool, so it runs on a blocking thread before storage removal.
+        let cleanup = tokio::task::spawn_blocking(move || {
             drop(circuit);
             match std::fs::remove_dir_all(&storage_path) {
                 Ok(()) => Ok(()),
@@ -229,12 +289,30 @@ impl<C: Circuit> Worker<C> {
             }
         })
         .await
-        .context("Incremental query cleanup task panicked")?
+        .context("Incremental query cleanup task panicked")
+        .and_then(|cleanup| cleanup);
+        // A registration that did not get its subscription returns only after the storage is gone.
+        if let Some((response, error)) = failure {
+            let _ = response.send(Err(error));
+        }
+        cleanup
+    }
+}
+
+#[cfg(test)]
+pub(super) mod test_support {
+    use super::*;
+
+    /// A batch holding a single transaction.
+    pub(crate) fn single_batch(tx_key: TxKey, triples: Vec<Tup2<EncodedTriple, ZWeight>>) -> Batch {
+        let tx_ids = vec![tx_key.tx_id; triples.len()];
+        Batch::new(tx_key, triples, tx_ids)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::single_batch;
     use super::*;
 
     fn triple(attribute: i64, entity: u8) -> Tup2<EncodedTriple, ZWeight> {
@@ -260,7 +338,7 @@ mod tests {
 
     #[test]
     fn batch_returns_each_attributes_triples() {
-        let batch = Batch::single(
+        let batch = single_batch(
             *crate::bootstrap::BOOTSTRAP_TX_KEY,
             vec![triple(3, 1), triple(1, 2), triple(3, 3), triple(2, 4)],
         );
