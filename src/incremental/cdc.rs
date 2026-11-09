@@ -329,13 +329,16 @@ where
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::sync::Arc;
+    use std::time::Duration;
 
-    use tokio::sync::RwLock;
+    use tokio::sync::{mpsc, RwLock};
 
     use crate::inc_query::test_support::test_schema;
+    use crate::incremental::CdcSource;
     use crate::indexer::{Indexer, DEFAULT_TX_COMPLETION_CAPACITY};
     use crate::metadata::{Metadata, PartitionMap};
     use crate::ops::Datom;
+    use crate::slate::SlateComponents;
     use crate::transaction::TxKey;
 
     // An indexer whose latest indexed transaction is `basis`.
@@ -353,6 +356,17 @@ pub(crate) mod test_support {
             db,
             *crate::bootstrap::BOOTSTRAP_TX_KEY,
         )))
+    }
+
+    // A source on the WAL of `slate` whose channel is closed, so its CDC task never routes a batch.
+    pub(in crate::incremental) fn source(slate: &SlateComponents) -> CdcSource {
+        let (commands, _) = mpsc::unbounded_channel();
+        CdcSource {
+            object_path: slate.object_path.clone(),
+            object_store: slate.object_store.clone(),
+            poll_interval: Duration::from_millis(10),
+            commands: commands.downgrade(),
+        }
     }
 
     // Writes the index entries of `datoms` as transaction entity `tx_eid` of the test schema.

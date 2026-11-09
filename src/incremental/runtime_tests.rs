@@ -63,7 +63,7 @@ struct Fixture {
 impl Fixture {
     async fn new(capacity: usize) -> Self {
         let storage = tempfile::tempdir().unwrap();
-        let db = crate::slate::in_memory_slate().await.db;
+        let slate = crate::slate::in_memory_slate().await;
         let inner = IncrementalQueryServiceInner::new(
             storage.path().to_path_buf(),
             CancellationToken::new(),
@@ -71,8 +71,9 @@ impl Fixture {
                 inbox_capacity: NonZeroUsize::new(capacity).unwrap(),
                 ..IncrementalQueryOptions::default()
             },
-            db.clone(),
-            cdc::test_support::test_indexer(db),
+            slate.db.clone(),
+            cdc::test_support::test_indexer(slate.db.clone()),
+            cdc::test_support::source(&slate),
         );
         Self {
             inner,

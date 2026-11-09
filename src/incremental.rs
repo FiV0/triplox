@@ -193,19 +193,19 @@ impl IncrementalQueryService {
         options: IncrementalQueryOptions,
     ) -> Self {
         let (sender, receiver) = mpsc::unbounded_channel();
-        let mut inner = IncrementalQueryServiceInner::new(
+        let inner = IncrementalQueryServiceInner::new(
             storage_root,
             cancel.child_token(),
             options,
             slate.db.clone(),
             indexer.clone(),
+            CdcSource {
+                object_path: slate.object_path.clone(),
+                object_store: slate.object_store.clone(),
+                poll_interval: cdc_poll_interval,
+                commands: sender.downgrade(),
+            },
         );
-        inner.cdc = Some(CdcSource {
-            object_path: slate.object_path.clone(),
-            object_store: slate.object_store.clone(),
-            poll_interval: cdc_poll_interval,
-            commands: sender.downgrade(),
-        });
         tokio::spawn(inner.run(receiver));
 
         Self {
@@ -284,8 +284,7 @@ struct IncrementalQueryServiceInner {
     db: Arc<slatedb::Db>,
     // Gives the registration basis, and the schema that the CDC task decodes with.
     indexer: Arc<RwLock<Indexer>>,
-    // Without a source, as in tests, no CDC task starts.
-    cdc: Option<CdcSource>,
+    cdc: CdcSource,
     cdc_task: Option<JoinHandle<Result<()>>>,
     // Sending end of worker retirement notifications. Each worker gets its own copy of this channel.
     completed: mpsc::UnboundedSender<Completion>,
@@ -300,6 +299,7 @@ impl IncrementalQueryServiceInner {
         options: IncrementalQueryOptions,
         db: Arc<slatedb::Db>,
         indexer: Arc<RwLock<Indexer>>,
+        cdc: CdcSource,
     ) -> Self {
         let (completed, completions) = mpsc::unbounded_channel();
         Self {
@@ -311,7 +311,7 @@ impl IncrementalQueryServiceInner {
             options,
             db,
             indexer,
-            cdc: None,
+            cdc,
             cdc_task: None,
             completed,
             completions,
@@ -320,19 +320,16 @@ impl IncrementalQueryServiceInner {
 
     // The CDC task starts with the first query and reads the WAL from its beginning.
     fn start_cdc(&mut self) {
-        let Some(cdc) = &self.cdc else {
-            return;
-        };
         if self.cdc_task.is_some() {
             return;
         }
         self.cdc_task = Some(spawn_cdc_loop(
-            cdc.object_path.clone(),
-            cdc.object_store.clone(),
+            self.cdc.object_path.clone(),
+            self.cdc.object_store.clone(),
             self.indexer.clone(),
-            cdc.commands.clone(),
+            self.cdc.commands.clone(),
             self.cancel.clone(),
-            cdc.poll_interval,
+            self.cdc.poll_interval,
         ));
     }
 
@@ -808,7 +805,8 @@ mod tests {
                 ..Default::default()
             },
             slate.db.clone(),
-            cdc::test_support::test_indexer(slate.db),
+            cdc::test_support::test_indexer(slate.db.clone()),
+            cdc::test_support::source(&slate),
         );
         let basis = test_tx_key_with_tx_id(1);
         let mut first = register_inline(&mut inner, single_pattern_plan(), basis).await;
