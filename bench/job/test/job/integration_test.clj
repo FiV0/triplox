@@ -25,19 +25,18 @@
 
 (def matching-answer [["Film Company" "follows" "Money Movie"]])
 
-(defn- check-queries! [baseline triplox views tx executor expected-11b]
-  (let [baseline-db ((:db baseline))
+(defn- check-queries! [baseline triplox views executor expected-11b]
+  (let [snapshots (:snapshots (#'runner/await-quiet-views! triplox views 2000 30000))
+        baseline-db ((:db baseline))
         triplox-db ((:db triplox))]
-    (doseq [[id view] views]
+    (doseq [[id snapshot] snapshots]
       (testing (str "JOB " id)
         ;; Read uncached baseline answers for verification.
         (let [expected (binding [datalevin-query/*cache?* false]
                          (artifacts/normalized ((:query baseline) baseline-db id)))
-              actual (runner/bounded executor 30000 #((:query triplox) triplox-db id))
-              snapshot ((:await-view! triplox) view tx 30000)]
+              actual (runner/bounded executor 30000 #((:query triplox) triplox-db id))]
           (is (= expected (artifacts/normalized actual)) "standard query")
           (is (= expected (artifacts/normalized (:rows snapshot))) "incremental view")
-          (is (<= (:tx-id tx) (get-in snapshot [:tx-key :tx-id])) "view freshness")
           (when (= id "11b")
             (is (= expected-11b expected) "fixture exercises missing-attribute negation")))))))
 
@@ -57,12 +56,11 @@
         (testing (str "register JOB " id " before ingestion")
           (swap! views conj [id (runner/bounded executor 30000 #((:view! triplox) id))])))
       (is (= 113 (count @views)))
-      (let [last-tx (reduce (fn [_ rows]
-                             (let [tx (data/transaction rows)]
-                               ((:transact! baseline) tx)
-                               ((:transact! triplox) tx)))
-                           nil (partition-all 2 fixture))]
-        (check-queries! baseline triplox @views last-tx executor matching-answer))
+      (doseq [rows (partition-all 2 fixture)]
+        (let [tx (data/transaction rows)]
+          ((:transact! baseline) tx)
+          ((:transact! triplox) tx)))
+      (check-queries! baseline triplox @views executor matching-answer)
       (finally
         (doseq [[_ view] @views] (.close ^AutoCloseable view))
         (.shutdownNow executor)

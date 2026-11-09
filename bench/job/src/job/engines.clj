@@ -89,8 +89,18 @@
      :indexed-tx #(.txId (.txKey ((api "db") conn)))
      :db #((api "db") conn)
      :query (fn [db id] ((api "q") db (queries/translate id :triplox)))
-     :view! (fn [id] ((view "->view") conn (queries/translate id :triplox)))
-     :await-view! (fn [v tx timeout-ms] ((view "await-tx") v tx timeout-ms))
+     ;; Views report no transaction progress, so the runner waits for them to go quiet.
+     ;; A watch on the view's rows records when the last delta was applied.
+     :view! (fn [id]
+              (let [v ((view "->view") conn (queries/translate id :triplox))
+                    updated (atom (System/nanoTime))]
+                (add-watch (:view v) ::updated (fn [& _] (reset! updated (System/nanoTime))))
+                (assoc v ::updated updated)))
+     :view-updated (fn [v]
+                     (when ((view "done?") v)
+                       (throw (ex-info "Triplox view stopped" {})))
+                     @(::updated v))
+     :view-rows (fn [v] ((view "get-view") v))
      :close! #(.close ^AutoCloseable conn)}))
 
 (defn open! [{:keys [engine] :as config}]
