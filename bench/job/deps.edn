@@ -1,0 +1,14 @@
+{:paths ["src" "resources" "target/classes"]
+ :deps {org.clojure/clojure {:mvn/version "1.12.5"}
+        org.clojure/data.json {:mvn/version "2.5.1"}}
+ :aliases
+ {:test {:extra-paths ["test"] :main-opts ["-m" "job.test-runner"]}
+  :datalevin
+  {:extra-deps {datalevin/datalevin {:mvn/version "1.1.0"}}
+   :jvm-opts ["--add-opens=java.base/java.lang=ALL-UNNAMED"
+              "--add-opens=java.base/java.nio=ALL-UNNAMED"
+              "--add-opens=java.base/java.util=ALL-UNNAMED"
+              "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+              "--enable-native-access=ALL-UNNAMED"]}
+  :datomic {:extra-deps {com.datomic/peer {:mvn/version "1.0.7705"}}}
+  :triplox {:extra-deps {xyz.triplox/triplox {:mvn/version "0.1.0-job-benchmark"}}}}}
