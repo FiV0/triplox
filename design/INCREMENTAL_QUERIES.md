@@ -525,7 +525,8 @@ queries in these steps:
 3. The dispatcher stops all workers through their `Control`.
 4. The dispatcher waits for a `Completion` from each worker.
 5. The dispatcher shuts down the `RuntimePool` and sends the result.
-6. The service reports the CDC error and the cleanup error together.
+6. If the CDC task or the cleanup failed, the service returns that error. If
+   both failed, it returns one error that contains both.
 
 A worker cannot stop a circuit build that started. The build finishes, and then
 the worker stops. If a worker stops before priming finishes, the answer to the
