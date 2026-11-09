@@ -5,3 +5,12 @@ target/
 docker/data/
 *.md
 !docker/README.md
+
+bench/job/data/
+bench/job/downloads/
+bench/job/runs/
+bench/job/state/
+bench/job/target/
+bench/job/.cpcache/
+bench/job/__pycache__/
+bench/job/**/__pycache__/
