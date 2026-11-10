@@ -79,7 +79,8 @@
 (defn take!
   "Block for the next delta. Returns a vector of `[row-values weight]` pairs
   or nil when the stream is closed. The second argument bounds the wait,
-  returning `::timeout` on expiry.
+  returning `::timeout` on expiry. An empty vector reports that the query
+  processed the transactions up to `tx-key` without a change.
 
   A terminal subscription error throws TriploxException."
   ([sub] (types/delta->clj (.take ^Subscription sub)))
@@ -98,7 +99,8 @@
      :system-time (.systemTime b)}))
 
 (defn tx-key
-  "The latest consumed delta's tx-key, or nil before any delta is consumed."
+  "The latest consumed delta's tx-key, or nil before any delta is consumed.
+  The query has processed every transaction up to this key."
   [^Subscription sub]
   (when-let [b (.txKey sub)]
     {:tx-id (.txId b)

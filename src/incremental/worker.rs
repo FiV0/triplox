@@ -185,24 +185,36 @@ async fn serve<C: Circuit>(
     if response.send(Ok(subscription)).is_err() {
         return Ok(());
     }
+    // The newest processed tx key that no sent delta covers yet.
+    let mut progress = None;
     loop {
         let batch = tokio::select! {
             biased;
             _ = stop.token.cancelled() => break,
             _ = sender.closed() => break,
             batch = inbox.recv() => match batch { Some(batch) => batch, None => break },
+            // Runs only when the inbox is empty, so a burst of unchanged batches sends one empty delta.
+            permit = sender.reserve(), if progress.is_some() => {
+                let Ok(permit) = permit else { break };
+                let tx_key = progress.take().expect("progress is pending");
+                permit.send(IncrementalQueryDelta { tx_key, rows: Vec::new() });
+                continue;
+            }
         };
-        if !circuit.matches(&batch) {
-            continue;
-        }
         // A started step always finishes. A stop takes effect between steps.
-        let rows = circuit.apply(&batch).await?;
+        let rows = if circuit.matches(&batch) {
+            circuit.apply(&batch).await?
+        } else {
+            Vec::new()
+        };
         if stop.token.is_cancelled() {
             break;
         }
         if rows.is_empty() {
+            progress = Some(batch.tx_key);
             continue;
         }
+        progress = None;
         tokio::select! {
             biased;
             _ = stop.token.cancelled() => break,

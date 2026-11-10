@@ -21,6 +21,9 @@ import org.msgpack.core.MessageUnpacker;
  * {@code error} frame or invalid stream state surfaces from the next {@code
  * take}/{@code poll}. {@link #close()} cancels the stream and unsubscribes.</p>
  *
+ * <p>A delta with no rows reports that the query processed the transactions up to
+ * its tx key without a change to the result.</p>
+ *
  * <p>Thread-safety: consume a single subscription from one thread.</p>
  */
 public final class Subscription implements AutoCloseable {

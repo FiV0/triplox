@@ -1964,7 +1964,7 @@ mod tests {
         }
     }
 
-    async fn recv_incremental_delta(
+    async fn next_incremental_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> crate::incremental::IncrementalQueryDelta {
         let delta = tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
@@ -1972,6 +1972,18 @@ mod tests {
             .expect("timed out waiting for incremental delta")
             .expect("subscription should be open");
         incremental_delta(delta)
+    }
+
+    // Skips the empty deltas that only report progress.
+    async fn recv_incremental_delta(
+        subscription: &mut IncrementalQuerySubscription,
+    ) -> crate::incremental::IncrementalQueryDelta {
+        loop {
+            let delta = next_incremental_delta(subscription).await;
+            if !delta.rows.is_empty() {
+                return delta;
+            }
+        }
     }
 
     async fn take_priming_delta(
@@ -1982,14 +1994,22 @@ mod tests {
         delta
     }
 
+    // Returns the first delta with rows within the wait, skipping progress deltas.
     async fn try_recv_incremental_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> Option<crate::incremental::IncrementalQueryDelta> {
-        tokio::time::timeout(Duration::from_millis(500), subscription.deltas.recv())
-            .await
-            .ok()
-            .flatten()
-            .map(incremental_delta)
+        tokio::time::timeout(Duration::from_millis(500), async {
+            while let Some(delta) = subscription.deltas.recv().await {
+                let delta = incremental_delta(delta);
+                if !delta.rows.is_empty() {
+                    return Some(delta);
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten()
     }
 
     fn sort_query_rows(rows: &mut [Vec<DataType>]) {
@@ -2076,6 +2096,30 @@ mod tests {
             subscription.deltas.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
+    }
+
+    #[tokio::test]
+    async fn test_incremental_query_reports_progress_for_unrelated_transaction() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let mut subscription = node
+            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
+            .await
+            .unwrap();
+
+        let tx_key = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            }],
+        )
+        .await;
+        let progress = next_incremental_delta(&mut subscription).await;
+        assert_eq!(progress.tx_key, tx_key);
+        assert!(progress.rows.is_empty());
     }
 
     #[tokio::test]
