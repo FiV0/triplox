@@ -22,6 +22,7 @@ The following is a non-exhaustive list of things that we plan to add to Triplox 
 - the `entity` API
 - incremental queries (IQs)
   - rules (rules for IQs require recursive circuits which are more tricky than simply building a circuit tree)
+  - [durable streams](https://github.com/durable-streams/durable-streams) for IQs. I think the incremental query client/server protocol is quite brittle and likely not something that works well for the web.
 - explicit entity id partition support
 - variable support in attribute position
 - Extending the Expression Engine with more standard functions
