@@ -196,12 +196,12 @@ async fn serve<C: Circuit>(
         let rows = if circuit.matches(&batch) {
             circuit.apply(&batch).await?
         } else {
+            // An unchanged batch still sends an empty delta, so the subscriber sees progress.
             Vec::new()
         };
         if stop.token.is_cancelled() {
             break;
         }
-        // An unchanged batch still sends an empty delta, so the subscriber sees progress.
         tokio::select! {
             biased;
             _ = stop.token.cancelled() => break,
