@@ -1,12 +1,6 @@
-use std::sync::Arc;
-
 use bytes::Bytes;
 
 use anyhow::Error;
-use slatedb::{DbMetadataOps, DbReadOps};
-use tokio::runtime::Handle;
-
-use crate::slate::DEFAULT_SCAN_OPTIONS;
 
 pub(crate) trait Index {
     fn count(&self) -> Result<u64, Error>;
@@ -18,104 +12,6 @@ pub(crate) trait Index {
 
 /// Type alias for extractor functions that extract a component from a full key.
 pub type Extractor = Box<dyn Fn(Bytes) -> Bytes + Send + Sync>;
-
-pub(crate) struct SlateIterator<M>
-where
-    M: DbMetadataOps + Send + Sync,
-{
-    inner: slatedb::DbIterator,
-    current_key: Option<Bytes>,
-    prefix: Bytes,
-    handle: Handle,
-    extractor: Extractor,
-    range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-}
-
-impl<M> SlateIterator<M>
-where
-    M: DbMetadataOps + Send + Sync,
-{
-    pub fn new<D>(
-        prefix: &[u8],
-        slate: &D,
-        handle: Handle,
-        extractor: Extractor,
-        range_stats: Arc<slatedb_estimates::RangeStats<M>>,
-    ) -> Result<Self, Error>
-    where
-        D: DbReadOps + Send + Sync,
-    {
-        let prefix_bytes = Bytes::from(prefix.to_vec());
-        let mut iterator =
-            handle.block_on(slate.scan_prefix_with_options(prefix, .., &DEFAULT_SCAN_OPTIONS))?;
-        let mut current_key = None;
-        if let Some(next_key) = handle.block_on(iterator.next())? {
-            current_key = Some(next_key.key.clone());
-        }
-        Ok(Self {
-            inner: iterator,
-            current_key,
-            prefix: prefix_bytes,
-            handle,
-            extractor,
-            range_stats,
-        })
-    }
-}
-
-impl<M> Index for SlateIterator<M>
-where
-    M: DbMetadataOps + Send + Sync,
-{
-    fn count(&self) -> Result<u64, Error> {
-        Ok(self.handle.block_on(
-            self.range_stats
-                .estimate_key_count_with_prefix(&self.prefix),
-        )?)
-    }
-
-    fn seek(&mut self, extension: Bytes) -> Result<(), Error> {
-        let mut full_key = self.prefix.to_vec();
-        full_key.extend_from_slice(&extension);
-        let full_key = Bytes::from(full_key);
-
-        // SlateDB forbids backward seeks. If already at or past the target, skip the seek.
-        // TODO: check if this extra check can be avoided. Normally we should only seek forwards.
-        match &self.current_key {
-            Some(current) if current.as_ref() >= full_key.as_ref() => return Ok(()),
-            _ => {}
-        }
-
-        self.handle.block_on(self.inner.seek(full_key))?;
-
-        // Update current_key so get_value() reflects the new position.
-        let next_entry = self.handle.block_on(self.inner.next())?;
-        self.current_key = next_entry.map(|e| e.key.clone());
-        Ok(())
-    }
-
-    fn next(&mut self) -> Result<Option<Bytes>, Error> {
-        let next_key = self.handle.block_on(self.inner.next())?;
-        if let Some(next_key) = next_key {
-            self.current_key = Some(next_key.key.clone());
-            Ok(Some((self.extractor)(next_key.key)))
-        } else {
-            self.current_key = None;
-            Ok(None)
-        }
-    }
-
-    fn get_value(&self) -> Result<Option<Bytes>, Error> {
-        match &self.current_key {
-            Some(key) => Ok(Some((self.extractor)(key.clone()))),
-            None => Ok(None),
-        }
-    }
-
-    fn has_next(&self) -> bool {
-        self.current_key.is_some()
-    }
-}
 
 // vec is assumed to be sorted
 pub(crate) struct VecIterator {
@@ -169,7 +65,6 @@ impl Index for VecIterator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::slate::in_memory_slate;
 
     #[test]
     fn test_vec_iterator_basic_operations() {
@@ -241,136 +136,5 @@ mod tests {
         assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("y")));
         iter.next().unwrap();
         assert_eq!(iter.get_value().unwrap(), None);
-    }
-
-    /// Build a key: prefix + value + OP byte (0x01 for ADD)
-    fn make_key(prefix: &[u8], value: &[u8]) -> Vec<u8> {
-        let mut key = prefix.to_vec();
-        key.extend_from_slice(value);
-        key.push(0x01); // ADD op
-        key
-    }
-
-    const PFX: &[u8] = b"\x01";
-    const OTHER_PFX: &[u8] = b"\x02";
-
-    /// Create an extractor that strips prefix and suffix (OP byte) from the key
-    fn make_test_extractor(prefix_len: usize) -> Extractor {
-        Box::new(move |key: Bytes| {
-            // Extract everything after prefix and before the OP byte
-            key.slice(prefix_len..key.len() - 1)
-        })
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_slate_iterator_basic() {
-        let components = in_memory_slate().await;
-        let slate = components.db.clone();
-        let range_stats = components.range_stats.clone();
-        let handle = Handle::current();
-
-        slate.put(&make_key(PFX, b"aa"), b"").await;
-        slate.put(&make_key(PFX, b"bb"), b"").await;
-        slate.put(&make_key(PFX, b"cc"), b"").await;
-        slate.put(&make_key(OTHER_PFX, b"xx"), b"").await;
-
-        let sdb = slate;
-
-        tokio::task::spawn_blocking(move || {
-            let extractor = make_test_extractor(PFX.len());
-            let mut iter =
-                SlateIterator::new(PFX, sdb.as_ref(), handle, extractor, range_stats).unwrap();
-
-            assert!(iter.has_next());
-            assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("aa")));
-
-            assert_eq!(iter.next().unwrap(), Some(Bytes::from("bb")));
-            assert_eq!(iter.next().unwrap(), Some(Bytes::from("cc")));
-            assert_eq!(iter.next().unwrap(), None);
-            assert!(!iter.has_next());
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_slate_iterator_seek() {
-        let components = in_memory_slate().await;
-        let slate = components.db.clone();
-        let range_stats = components.range_stats.clone();
-        let handle = Handle::current();
-
-        slate.put(&make_key(PFX, b"aa"), b"").await;
-        slate.put(&make_key(PFX, b"cc"), b"").await;
-        slate.put(&make_key(PFX, b"ee"), b"").await;
-
-        let sdb = slate;
-
-        tokio::task::spawn_blocking(move || {
-            let extractor = make_test_extractor(PFX.len());
-            let mut iter =
-                SlateIterator::new(PFX, sdb.as_ref(), handle, extractor, range_stats).unwrap();
-
-            iter.seek(Bytes::from("cc")).unwrap();
-            assert_eq!(iter.get_value().unwrap(), Some(Bytes::from("cc")));
-            assert_eq!(iter.next().unwrap(), Some(Bytes::from("ee")));
-            assert_eq!(iter.next().unwrap(), None);
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_slate_iterator_empty_prefix() {
-        let components = in_memory_slate().await;
-        let slate = components.db.clone();
-        let range_stats = components.range_stats.clone();
-        let handle = Handle::current();
-
-        slate.put(&make_key(OTHER_PFX, b"aa"), b"").await;
-
-        let sdb = slate;
-
-        tokio::task::spawn_blocking(move || {
-            let extractor = make_test_extractor(PFX.len());
-            let iter =
-                SlateIterator::new(PFX, sdb.as_ref(), handle, extractor, range_stats).unwrap();
-            assert!(!iter.has_next());
-            assert_eq!(iter.get_value().unwrap(), None);
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn test_slate_iterator_count() {
-        let components = in_memory_slate().await;
-        let slate = components.db.clone();
-        let range_stats = components.range_stats.clone();
-        let handle = Handle::current();
-
-        slate.put(&make_key(PFX, b"aa"), b"").await;
-        slate.put(&make_key(PFX, b"bb"), b"").await;
-        slate.put(&make_key(PFX, b"cc"), b"").await;
-
-        // Flush memtable to SSTs so RangeStats can read the metadata
-        slate
-            .flush_with_options(slatedb::config::FlushOptions {
-                flush_type: slatedb::config::FlushType::MemTable,
-            })
-            .await
-            .unwrap();
-
-        let sdb = slate;
-
-        tokio::task::spawn_blocking(move || {
-            let extractor = make_test_extractor(PFX.len());
-            let iter =
-                SlateIterator::new(PFX, sdb.as_ref(), handle, extractor, range_stats).unwrap();
-            let count = iter.count().unwrap();
-            assert_eq!(count, 3);
-        })
-        .await
-        .unwrap();
     }
 }

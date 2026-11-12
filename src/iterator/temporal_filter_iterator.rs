@@ -201,7 +201,7 @@ mod tests {
     use crate::ops::DataType;
     use crate::slate::in_memory_slate;
 
-    const PFX: &[u8] = b"\x04"; // AV prefix
+    const PFX: &[u8] = &[codec::AVE];
 
     fn make_key(prefix: &[u8], data: &[u8], tx_eid: i64, op: u8) -> Vec<u8> {
         let mut key = prefix.to_vec();

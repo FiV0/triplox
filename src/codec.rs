@@ -33,8 +33,6 @@ pub const TX_EID_LENGTH: usize = 8;
 pub const EAV: u8 = 0;
 pub const AVE: u8 = 1;
 pub const AEV: u8 = 2;
-pub const AE: u8 = 3;
-pub const AV: u8 = 4;
 pub const VAE: u8 = 5;
 
 pub const STATS_INDEX: u8 = 128;
@@ -58,8 +56,6 @@ pub fn index_type_to_prefix(index_type: IndexType) -> Result<u8, Error> {
         IndexType::AVE => Ok(AVE),
         IndexType::AEV => Ok(AEV),
         IndexType::VAE => Ok(VAE),
-        IndexType::AE => Ok(AE),
-        IndexType::AV => Ok(AV),
     }
 }
 
