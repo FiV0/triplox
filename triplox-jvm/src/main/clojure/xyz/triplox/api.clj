@@ -65,8 +65,8 @@
 (defn subscribe
   "Register an incremental query and stream its result deltas. A non-empty
   initial result is the first delta. Later deltas arrive once per indexed
-  batch. Returns a Subscription (Closeable); use
-  with `with-open`. Closing unsubscribes."
+  batch. Returns a Subscription (Closeable); use with `with-open`. Closing
+  unsubscribes."
   ^Subscription [conn query & args]
   (if (seq args)
     (let [query-args (mapv (fn [a]
