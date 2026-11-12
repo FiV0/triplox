@@ -792,7 +792,11 @@ mod tests {
         let (service, batches) = service_at(dir.path()).await;
         let mut query = register(
             &service,
-            aggregate_plan("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]"),
+            aggregate_plan(
+                "{:find [?name ?age]
+                  :where [[?e :name ?name]
+                          [?e :age ?age]]}",
+            ),
         )
         .await;
         take_empty_priming(&mut query).await;

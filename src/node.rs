@@ -2095,10 +2095,11 @@ mod tests {
         let node = Node::memory_node().await;
         define_test_schema(&node).await;
         flush_wal(&node).await;
-        let mut subscription = node
-            .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
-            .await
-            .unwrap();
+        let query = parse_query(
+            "{:find [?name]
+              :where [[?e :name ?name]]}",
+        );
+        let mut subscription = node.register_incremental_query(query, &[]).await.unwrap();
         take_priming_delta(&mut subscription).await;
 
         let tx_key = execute_and_flush(
