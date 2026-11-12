@@ -262,7 +262,7 @@ impl Fixture {
     }
 
     // Routes a batch that the probe does not match.
-    fn apply_unchanged(&self, seq: i64) -> TxKey {
+    fn apply_unmatched(&self, seq: i64) -> TxKey {
         self.route(seq, false)
     }
 
@@ -427,14 +427,14 @@ async fn full_output_can_resume_without_termination() {
 }
 
 #[tokio::test]
-async fn unchanged_batch_sends_empty_delta_without_apply() {
+async fn unmatched_batch_sends_empty_delta_without_apply() {
     let mut fixture = Fixture::new(4).await;
     let (mut query, mut steps) = fixture.query().await;
     let first = fixture.apply(1);
-    let unchanged = fixture.apply_unchanged(2);
+    let unmatched = fixture.apply_unmatched(2);
     let third = fixture.apply(3);
     assert_eq!(next(&mut query).await.unwrap().tx_key, first);
-    assert_eq!(next(&mut query).await.unwrap(), empty_delta(unchanged));
+    assert_eq!(next(&mut query).await.unwrap(), empty_delta(unmatched));
     assert_eq!(next(&mut query).await.unwrap().tx_key, third);
     // The third delta arrived, so the probe already reported each apply.
     assert_eq!(started(&mut steps).await, 1);
@@ -444,18 +444,18 @@ async fn unchanged_batch_sends_empty_delta_without_apply() {
 }
 
 #[tokio::test]
-async fn unchanged_batch_waits_behind_running_apply() {
+async fn unmatched_batch_waits_behind_running_apply() {
     let mut fixture = Fixture::new(4).await;
     let (mut query, mut steps, release) = fixture.gated_query().await;
     let first = fixture.apply(1);
-    let unchanged = fixture.apply_unchanged(2);
+    let unmatched = fixture.apply_unmatched(2);
     let third = fixture.apply(3);
     assert_eq!(started(&mut steps).await, 1);
     // The first apply still runs, so the empty delta cannot overtake it.
     assert!(query.deltas.try_recv().is_err());
     release.send(()).unwrap();
     assert_eq!(next(&mut query).await.unwrap().tx_key, first);
-    assert_eq!(next(&mut query).await.unwrap(), empty_delta(unchanged));
+    assert_eq!(next(&mut query).await.unwrap(), empty_delta(unmatched));
     assert_eq!(started(&mut steps).await, 3);
     release.send(()).unwrap();
     assert_eq!(next(&mut query).await.unwrap().tx_key, third);
@@ -463,28 +463,28 @@ async fn unchanged_batch_waits_behind_running_apply() {
 }
 
 #[tokio::test]
-async fn unchanged_batch_routed_during_build_sends_empty_delta() {
+async fn unmatched_batch_routed_during_build_sends_empty_delta() {
     let mut fixture = Fixture::new(2).await;
     let (release, mut pending) = fixture.gated_build(vec![]);
-    let unchanged = fixture.apply_unchanged(1);
+    let unmatched = fixture.apply_unmatched(1);
     let second = fixture.apply(2);
     release.send(()).unwrap();
     let mut query = pending.result().await.unwrap();
-    assert_eq!(next(&mut query).await.unwrap(), empty_delta(unchanged));
+    assert_eq!(next(&mut query).await.unwrap(), empty_delta(unmatched));
     assert_eq!(next(&mut query).await.unwrap().tx_key, second);
     assert_eq!(started(&mut pending.steps).await, 2);
     fixture.finish().await;
 }
 
 #[tokio::test]
-async fn unchanged_batches_count_against_inbox_capacity() {
+async fn unmatched_batches_count_against_inbox_capacity() {
     let mut fixture = Fixture::new(1).await;
     let (mut query, mut steps, release) = fixture.gated_query().await;
     fixture.apply(1);
     // The worker took the first batch, so the inbox is empty again.
     started(&mut steps).await;
-    fixture.apply_unchanged(2);
-    let overflow = fixture.apply_unchanged(3);
+    fixture.apply_unmatched(2);
+    let overflow = fixture.apply_unmatched(3);
     let error = next(&mut query).await.unwrap_err();
     let lagged = error.downcast_ref::<SubscriptionLagged>().unwrap();
     assert_eq!(lagged.tx_key, overflow);

@@ -780,7 +780,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unchanged_batch_sends_empty_delta() {
+    async fn batches_without_output_send_empty_deltas() {
         let dir = tempfile::tempdir().unwrap();
         let (service, batches) = service_at(dir.path()).await;
         let mut query = register(
