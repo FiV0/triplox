@@ -87,7 +87,6 @@ impl Batch {
 
 pub(super) trait Circuit: Send + 'static {
     fn prime(&mut self, basis: TxKey) -> impl Future<Output = Result<Rows>> + Send;
-    fn matches(&self, batch: &Batch) -> bool;
     fn apply(&mut self, batch: &Batch) -> impl Future<Output = Result<Rows>> + Send;
 }
 
@@ -107,10 +106,6 @@ impl Circuit for SnapshotCircuit {
         )
         .await?;
         self.circuit.prime(triples).await
-    }
-
-    fn matches(&self, batch: &Batch) -> bool {
-        self.circuit.matches(batch)
     }
 
     fn apply(&mut self, batch: &Batch) -> impl Future<Output = Result<Rows>> + Send {
@@ -193,12 +188,8 @@ async fn serve<C: Circuit>(
             batch = inbox.recv() => match batch { Some(batch) => batch, None => break },
         };
         // A started step always finishes. A stop takes effect between steps.
-        let rows = if circuit.matches(&batch) {
-            circuit.apply(&batch).await?
-        } else {
-            // An unmatched batch still sends an empty delta, so the subscriber sees progress.
-            Vec::new()
-        };
+        // An unmatched batch gives no rows but still sends a delta, so the subscriber sees progress.
+        let rows = circuit.apply(&batch).await?;
         if stop.token.is_cancelled() {
             break;
         }

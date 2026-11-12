@@ -44,11 +44,11 @@ impl Circuit for Probe {
         Ok(std::mem::take(&mut self.config.priming))
     }
 
-    fn matches(&self, batch: &Batch) -> bool {
-        batch.triples()[0].0.attribute != UNMATCHED
-    }
-
     async fn apply(&mut self, batch: &Batch) -> Result<worker::Rows> {
+        // Like `QueryCircuit`, an unmatched batch returns no rows without a step.
+        if batch.triples().iter().all(|t| t.0.attribute == UNMATCHED) {
+            return Ok(vec![]);
+        }
         // Test batches are numbered by their offset from the bootstrap tx.
         let seq = batch.tx_key.tx_id - crate::bootstrap::BOOTSTRAP_TX_KEY.tx_id;
         let _ = self.steps.send(seq);
