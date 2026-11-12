@@ -39,7 +39,7 @@ through the circuits. The current design only tails the SlateDB WAL files. Thus,
 older start points are out of scope at this time.
 
 Priming is the first step of a circuit, on the data at the start of the query.
-If the priming result is not empty, it is the first delta. Each later delta
+The priming result is the first delta, also when it is empty. Each later delta
 describes the changes from the `TxKey` of the previous delta up to its own
 `TxKey`. One delta can cover several transactions.
 
@@ -339,7 +339,7 @@ registration. Registration has these steps:
 5. The worker builds the circuit on the pool, on a blocking thread.
 6. The worker scans the snapshot at the basis. It steps the circuit with the
    snapshot triples.
-7. If the priming result is not empty, the worker sends it as the first delta.
+7. The worker sends the priming result as the first delta, also when it is empty.
 8. The worker sends `Ok(subscription)` on the response channel, and
    `register_query` returns the subscription.
 

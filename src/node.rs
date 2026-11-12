@@ -1988,9 +1988,9 @@ mod tests {
     async fn take_priming_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> crate::incremental::IncrementalQueryDelta {
-        let delta = delta(subscription).await;
-        assert!(!delta.rows.is_empty());
-        delta
+        let priming = incremental_delta(next_delta(subscription).await);
+        assert_eq!(priming.tx_key, subscription.tx_key);
+        priming
     }
 
     // Returns the first delta with rows within the wait, skipping progress deltas.
@@ -2082,6 +2082,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(subscription.tx_key, expected_basis);
+        // The result at the basis is empty, but the priming delta is still sent.
+        assert!(take_priming_delta(&mut subscription).await.rows.is_empty());
         assert!(matches!(
             subscription.deltas.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
@@ -2097,6 +2099,7 @@ mod tests {
             .register_incremental_query(parse_query("[:find ?name :where [?e :name ?name]]"), &[])
             .await
             .unwrap();
+        take_priming_delta(&mut subscription).await;
 
         let tx_key = execute_and_flush(
             &node,
@@ -3019,6 +3022,7 @@ mod tests {
             .await
             .unwrap();
         let handle = subscription.handle;
+        take_priming_delta(&mut subscription).await;
 
         node.unregister_incremental_query(handle).await.unwrap();
 

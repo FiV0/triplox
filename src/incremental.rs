@@ -767,6 +767,13 @@ mod tests {
             .unwrap()
     }
 
+    // Takes the priming delta of a query whose result at the basis is empty.
+    async fn take_empty_priming(subscription: &mut IncrementalQuerySubscription) {
+        let priming = next_delta(subscription).await.unwrap();
+        assert_eq!(priming.tx_key, subscription.tx_key);
+        assert!(priming.rows.is_empty());
+    }
+
     // Skips the empty deltas that only report progress.
     async fn delta(
         subscription: &mut IncrementalQuerySubscription,
@@ -788,6 +795,7 @@ mod tests {
             aggregate_plan("[:find ?name ?age :where [?e :name ?name] [?e :age ?age]]"),
         )
         .await;
+        take_empty_priming(&mut query).await;
         // A batch without the query's attributes skips the step.
         let unmatched = test_tx_key_with_tx_id(2);
         apply_batch(&batches, single_batch(unmatched, vec![]))
@@ -892,7 +900,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn priming_precedes_live_deltas_and_empty_priming_is_omitted() {
+    async fn priming_precedes_live_deltas_even_when_empty() {
         let dir = tempfile::tempdir().unwrap();
         let slate = slate_with_names(&[(42, "Alice")]).await;
         let db = slate.db.clone();
@@ -902,7 +910,7 @@ mod tests {
         // Alice comes after this basis, so the priming result is empty.
         set_basis(&service, db, 0).await;
         let mut empty = register(&service, single_pattern_plan()).await;
-        assert!(empty.deltas.try_recv().is_err());
+        take_empty_priming(&mut empty).await;
         let tx_key = test_tx_key_with_tx_id(2);
         apply_batch(&batches, single_batch(tx_key, vec![name_triple(43, "Bob")]))
             .await
@@ -991,6 +999,7 @@ mod tests {
         .await;
         set_basis(&service, db, 1000).await;
         let mut query = register(&service, single_pattern_plan()).await;
+        take_empty_priming(&mut query).await;
         for seq in 1..=1000 {
             apply_batch(
                 &batches,
@@ -1066,6 +1075,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (service, _batches) = service_at(dir.path()).await;
         let mut query = register(&service, single_pattern_plan()).await;
+        take_empty_priming(&mut query).await;
         drop(service);
         assert!(
             tokio::time::timeout(Duration::from_secs(5), query.deltas.recv())

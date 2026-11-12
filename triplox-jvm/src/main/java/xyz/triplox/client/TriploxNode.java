@@ -122,8 +122,8 @@ public class TriploxNode implements AutoCloseable {
     /**
      * Register an incremental query and stream its result deltas.
      *
-     * <p>Subscribes at the latest indexed basis. A non-empty initial result is
-     * emitted first at that basis. Later deltas arrive once per indexed batch.
+     * <p>Subscribes at the latest indexed basis. The initial result is emitted
+     * first at that basis. Later deltas arrive once per indexed batch.
      * The returned {@link Subscription} is an {@link AutoCloseable}; closing it
      * cancels the stream and unsubscribes.</p>
      */

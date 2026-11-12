@@ -85,7 +85,7 @@ public final class Subscription implements AutoCloseable {
         throw new IOException("expected open frame, got " + first);
     }
 
-    /** The registration tx_key. A priming delta can equal it; later deltas are strictly after it. */
+    /** The registration tx_key. The priming delta equals it; later deltas are strictly after it. */
     public TxKey registrationTxKey() {
         return registrationTxKey;
     }

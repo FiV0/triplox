@@ -213,8 +213,14 @@ impl Fixture {
         &mut self,
         config: ProbeConfig,
     ) -> (IncrementalQuerySubscription, mpsc::UnboundedReceiver<i64>) {
+        let priming = config.priming.clone();
         let mut pending = self.register(config);
-        (pending.result().await.unwrap(), pending.steps)
+        let mut query = pending.result().await.unwrap();
+        // Takes the priming delta, so the tests see only the deltas of later batches.
+        let delta = next(&mut query).await.unwrap();
+        assert_eq!(delta.tx_key, *crate::bootstrap::BOOTSTRAP_TX_KEY);
+        assert_eq!(delta.rows, priming);
+        (query, pending.steps)
     }
 
     async fn query(&mut self) -> (IncrementalQuerySubscription, mpsc::UnboundedReceiver<i64>) {
@@ -470,6 +476,8 @@ async fn unmatched_batch_routed_during_build_sends_empty_delta() {
     let second = fixture.apply(2);
     release.send(()).unwrap();
     let mut query = pending.result().await.unwrap();
+    let basis = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+    assert_eq!(next(&mut query).await.unwrap(), empty_delta(basis));
     assert_eq!(next(&mut query).await.unwrap(), empty_delta(unmatched));
     assert_eq!(next(&mut query).await.unwrap().tx_key, second);
     assert_eq!(started(&mut pending.steps).await, 2);
@@ -740,6 +748,8 @@ async fn unregister_is_not_blocked_by_registration() {
     service.unregister(query.handle).await.unwrap();
     release.send(()).unwrap();
     let mut registered = pending.result().await.unwrap();
+    let basis = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+    assert_eq!(next(&mut registered).await.unwrap(), empty_delta(basis));
     let tx_key = dispatcher.apply(1).await;
     assert_eq!(next(&mut registered).await.unwrap().tx_key, tx_key);
     service.shutdown().await.unwrap();

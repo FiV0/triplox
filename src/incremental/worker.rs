@@ -168,14 +168,12 @@ async fn serve<C: Circuit>(
     if stop.token.is_cancelled() {
         return Ok(());
     }
-    if !rows.is_empty() {
-        sender
-            .try_send(IncrementalQueryDelta {
-                tx_key: basis,
-                rows,
-            })
-            .expect("new subscription queue has room for priming");
-    }
+    sender
+        .try_send(IncrementalQueryDelta {
+            tx_key: basis,
+            rows,
+        })
+        .expect("new subscription queue has room for priming");
     let (subscription, response) = registration.take().expect("priming registration");
     if response.send(Ok(subscription)).is_err() {
         return Ok(());

@@ -68,6 +68,9 @@ async fn subscribe_receives_transaction_delta() {
 
     let mut sub = client.subscribe(NAMES_QUERY).await.unwrap();
     assert_eq!(sub.tx_key(), None);
+    let priming = next_delta(&mut sub).await;
+    assert_eq!(priming.tx_key, sub.registration_tx_key());
+    assert!(priming.rows.is_empty());
     client.execute_tx(add_name("alice", "Alice")).await.unwrap();
 
     let delta = next_delta(&mut sub).await;
@@ -255,6 +258,7 @@ async fn shutdown_ends_live_subscription_and_drains_server() {
     client.execute_tx(test_schema_tx()).await.unwrap();
 
     let mut sub = client.subscribe(NAMES_QUERY).await.unwrap();
+    next_delta(&mut sub).await;
 
     token.cancel();
 

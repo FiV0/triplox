@@ -39,9 +39,11 @@
        (let [delta (api/take! sub (max 0 (- deadline (System/currentTimeMillis))))]
          (if (= [] delta) (recur) delta))))))
 
-(defn take-priming! [sub]
-  (let [delta (take-delta! sub)]
-    (is (seq delta))
+(defn take-priming!
+  "Takes the priming delta, which is the first delta and can be empty."
+  [sub]
+  (let [delta (api/take! sub default-delta-timeout-ms)]
+    (is (= (api/registration-tx-key sub) (api/tx-key sub)))
     delta))
 
 (defn single-value [query]
@@ -65,9 +67,10 @@
   (with-open [sub (api/subscribe *conn* names-query)]
     (is (some? (:tx-id (api/registration-tx-key sub))))
     (is (nil? (api/tx-key sub)))
+    (is (= [] (take-priming! sub)))
     ;; No transaction after the subscription -> bounded take! times out.
     (is (= ::api/timeout (api/take! sub 200)))
-    (is (nil? (api/tx-key sub)))))
+    (is (= (api/registration-tx-key sub) (api/tx-key sub)))))
 
 (deftest subscription-tx-key-tracks-consumed-deltas
   (api/transact *conn* [{:name "Alice"}])
@@ -92,6 +95,7 @@
 
 (deftest unrelated-transaction-sends-empty-delta
   (with-open [sub (api/subscribe *conn* names-query)]
+    (is (= [] (take-priming! sub)))
     (let [tx (-> (api/transact *conn* [{:age 30}])
                  (select-keys [:tx-id :system-time]))]
       (is (= [] (api/take! sub default-delta-timeout-ms)))
