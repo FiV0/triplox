@@ -336,7 +336,7 @@ Each frame is a map with a `kind` discriminator. Decoders **MUST reject unknown
 deltas describe transactions strictly after it. `columns` matches
 [QueryResponse](#46-queryresponse).
 
-#### `delta` frame — optional priming result, then one per affecting transaction
+#### `delta` frame: optional priming result, then one per indexed batch
 
 ```
 {"kind": "delta",
@@ -344,13 +344,21 @@ deltas describe transactions strictly after it. `columns` matches
  "rows":    [[[<DataType>, ...], <int weight>], ...]}
 ```
 
-The first delta is the non-empty priming result, if any, and uses the registration
-`tx_key`. Later deltas use the transaction key that produced the change. Each
-entry of `rows` is a 2-element array `[values, weight]`: `values` has one
-`DataType` per column (positional, per the `open` frame), `weight` is a **raw
-signed multiplicity** (`> 0` added, `< 0` retracted; not limited to `±1`). A
-`delta` frame is emitted only for a transaction that produces a non-empty change
-or for a non-empty priming result (`rows` is never empty).
+The first delta can be the priming result. The priming result is the query
+result at the registration basis. The server sends it only if it is not empty,
+and it uses the registration `tx_key`.
+
+After the basis, the server sends one delta for each batch that it indexes. A
+batch is a group of one or more transactions that the server indexes together.
+The delta uses the `tx_key` of the last transaction in the batch. If the batch
+does not change the query result, `rows` is empty. An empty delta tells the
+client that the result is current up to that `tx_key`.
+
+Each entry of `rows` is a 2-element array `[values, weight]`. `values` has one
+`DataType` per column, in the column order of the `open` frame. `weight` is a
+raw signed multiplicity (the signed count of copies of the row). A weight above
+0 adds copies, and a weight below 0 retracts copies. A weight is not limited to
+`±1`.
 
 #### `error` frame — terminal
 
