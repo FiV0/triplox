@@ -1997,18 +1997,9 @@ mod tests {
     async fn try_recv_incremental_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> Option<crate::incremental::IncrementalQueryDelta> {
-        tokio::time::timeout(Duration::from_millis(500), async {
-            while let Some(delta) = subscription.deltas.recv().await {
-                let delta = incremental_delta(delta);
-                if !delta.rows.is_empty() {
-                    return Some(delta);
-                }
-            }
-            None
-        })
-        .await
-        .ok()
-        .flatten()
+        tokio::time::timeout(Duration::from_millis(500), delta(subscription))
+            .await
+            .ok()
     }
 
     fn sort_query_rows(rows: &mut [Vec<DataType>]) {
