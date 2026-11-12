@@ -1,0 +1,41 @@
+services:
+  rustfs:
+    image: rustfs/rustfs:1.0.0
+    command: /data
+    environment:
+      RUSTFS_ACCESS_KEY: triplox
+      RUSTFS_SECRET_KEY: triplox123
+    volumes:
+      # Per-run directory on the loop-mounted RustFS filesystem (see ./disks).
+      - ${JOB_RUSTFS_DIR:?set by ./job}:/data
+    healthcheck:
+      test: [CMD, curl, -f, http://localhost:9000/health/ready]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+  createbucket:
+    image: rustfs/rc:v0.1.36
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command: ["-c", "rc alias set local http://rustfs:9000 triplox triplox123 && rc mb --ignore-existing local/job"]
+  triplox:
+    image: ${JOB_TRIPLOX_IMAGE:-triplox:job-benchmark}
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    command: [/etc/triplox/job.toml]
+    ports:
+      - "127.0.0.1:${JOB_TRIPLOX_PORT:-15490}:5490"
+    volumes:
+      - ./config/triplox.toml:/etc/triplox/job.toml:ro
+      - triplox-data:/var/lib/triplox
+      # Per-run directory on the loop-mounted SlateDB cache filesystem (see ./disks);
+      # the file log stays in triplox-data on the root filesystem.
+      - ${JOB_SLATEDB_CACHE_DIR:?set by ./job}:/var/lib/triplox/cache
+    depends_on:
+      createbucket:
+        condition: service_completed_successfully
+volumes:
+  triplox-data:
