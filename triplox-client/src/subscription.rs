@@ -69,7 +69,7 @@ async fn read_deltas(mut frames: FrameStream, sender: mpsc::Sender<Result<Delta>
 }
 
 impl Subscription {
-    /// The registration tx_key. A priming delta can equal it; later deltas are strictly after it.
+    /// The registration tx_key. The priming delta equals it; later deltas are strictly after it.
     pub fn registration_tx_key(&self) -> TxKey {
         self.registration_tx_key
     }

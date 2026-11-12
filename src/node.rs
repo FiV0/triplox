@@ -1964,32 +1964,42 @@ mod tests {
         }
     }
 
-    async fn recv_incremental_delta(
+    async fn next_delta(
         subscription: &mut IncrementalQuerySubscription,
-    ) -> crate::incremental::IncrementalQueryDelta {
-        let delta = tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
+    ) -> anyhow::Result<crate::incremental::IncrementalQueryDelta> {
+        tokio::time::timeout(Duration::from_secs(5), subscription.deltas.recv())
             .await
             .expect("timed out waiting for incremental delta")
-            .expect("subscription should be open");
-        incremental_delta(delta)
+            .expect("subscription should be open")
+    }
+
+    // Skips the empty deltas that only report progress.
+    async fn delta(
+        subscription: &mut IncrementalQuerySubscription,
+    ) -> crate::incremental::IncrementalQueryDelta {
+        loop {
+            match next_delta(subscription).await {
+                Ok(delta) if delta.rows.is_empty() => continue,
+                result => return incremental_delta(result),
+            }
+        }
     }
 
     async fn take_priming_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> crate::incremental::IncrementalQueryDelta {
-        let delta = recv_incremental_delta(subscription).await;
-        assert!(!delta.rows.is_empty());
-        delta
+        let priming = incremental_delta(next_delta(subscription).await);
+        assert_eq!(priming.tx_key, subscription.tx_key);
+        priming
     }
 
+    // Returns the first delta with rows within the wait, skipping progress deltas.
     async fn try_recv_incremental_delta(
         subscription: &mut IncrementalQuerySubscription,
     ) -> Option<crate::incremental::IncrementalQueryDelta> {
-        tokio::time::timeout(Duration::from_millis(500), subscription.deltas.recv())
+        tokio::time::timeout(Duration::from_millis(500), delta(subscription))
             .await
             .ok()
-            .flatten()
-            .map(incremental_delta)
     }
 
     fn sort_query_rows(rows: &mut [Vec<DataType>]) {
@@ -2072,10 +2082,38 @@ mod tests {
             .unwrap();
 
         assert_eq!(subscription.tx_key, expected_basis);
+        // The result at the basis is empty, but the priming delta is still sent.
+        assert!(take_priming_delta(&mut subscription).await.rows.is_empty());
         assert!(matches!(
             subscription.deltas.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
+    }
+
+    #[tokio::test]
+    async fn test_incremental_query_reports_progress_for_unrelated_transaction() {
+        let node = Node::memory_node().await;
+        define_test_schema(&node).await;
+        flush_wal(&node).await;
+        let query = parse_query(
+            "{:find [?name]
+              :where [[?e :name ?name]]}",
+        );
+        let mut subscription = node.register_incremental_query(query, &[]).await.unwrap();
+        take_priming_delta(&mut subscription).await;
+
+        let tx_key = execute_and_flush(
+            &node,
+            vec![TxOp::Add {
+                entity: EntityRef::Id(100),
+                attribute: kw!(:age),
+                value: DataType::Long(30),
+            }],
+        )
+        .await;
+        let progress = incremental_delta(next_delta(&mut subscription).await);
+        assert_eq!(progress.tx_key, tx_key);
+        assert!(progress.rows.is_empty());
     }
 
     #[tokio::test]
@@ -2118,7 +2156,7 @@ mod tests {
         };
         flush_wal(&node).await;
 
-        let delta = recv_incremental_delta(&mut subscription).await;
+        let delta = delta(&mut subscription).await;
         assert_eq!(delta.tx_key, basis);
         let mut rows = delta.rows;
         rows.sort_by_key(|row| format!("{:?}", row));
@@ -2199,7 +2237,7 @@ mod tests {
         };
         flush_wal(&node).await;
 
-        let delta = recv_incremental_delta(&mut subscription).await;
+        let delta = delta(&mut subscription).await;
         assert_eq!(delta.tx_key, future_basis);
         assert_eq!(
             delta.rows,
@@ -2234,7 +2272,7 @@ mod tests {
 
         flush_wal(&node).await;
 
-        let delta = recv_incremental_delta(&mut subscription).await;
+        let delta = delta(&mut subscription).await;
         assert_eq!(delta.tx_key, basis);
         assert_eq!(
             delta.rows,
@@ -2283,7 +2321,7 @@ mod tests {
         };
         flush_wal(&node).await;
 
-        let delta = recv_incremental_delta(&mut subscription).await;
+        let delta = delta(&mut subscription).await;
         assert_eq!(delta.tx_key, second_basis);
         assert_eq!(
             delta.rows,
@@ -2375,7 +2413,7 @@ mod tests {
 
         flush_wal(&node).await;
 
-        let mut delta = recv_incremental_delta(&mut subscription).await;
+        let mut delta = delta(&mut subscription).await;
         delta.rows.sort_by_key(|row| format!("{:?}", row));
         assert_eq!(delta.tx_key, basis);
         assert_eq!(
@@ -2421,7 +2459,7 @@ mod tests {
 
         flush_wal(&node).await;
 
-        let mut delta = recv_incremental_delta(&mut subscription).await;
+        let mut delta = delta(&mut subscription).await;
         delta.rows.sort_by_key(|row| format!("{:?}", row));
         assert_eq!(delta.tx_key, basis);
         assert_eq!(
@@ -2463,7 +2501,7 @@ mod tests {
             ],
         )
         .await;
-        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+        integrate_delta(&mut rows, delta(&mut subscription).await);
         assert_eq!(
             rows,
             vec![vec![
@@ -2490,7 +2528,7 @@ mod tests {
             }],
         )
         .await;
-        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+        integrate_delta(&mut rows, delta(&mut subscription).await);
         assert_eq!(
             rows,
             vec![
@@ -2564,7 +2602,7 @@ mod tests {
             }],
         )
         .await;
-        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+        integrate_delta(&mut rows, delta(&mut subscription).await);
 
         assert_eq!(
             rows,
@@ -2612,7 +2650,7 @@ mod tests {
             }],
         )
         .await;
-        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+        integrate_delta(&mut rows, delta(&mut subscription).await);
         assert_eq!(
             rows,
             vec![vec![
@@ -2630,7 +2668,7 @@ mod tests {
             }],
         )
         .await;
-        integrate_delta(&mut rows, recv_incremental_delta(&mut subscription).await);
+        integrate_delta(&mut rows, delta(&mut subscription).await);
 
         assert_eq!(
             rows,
@@ -2985,6 +3023,7 @@ mod tests {
             .await
             .unwrap();
         let handle = subscription.handle;
+        take_priming_delta(&mut subscription).await;
 
         node.unregister_incremental_query(handle).await.unwrap();
 

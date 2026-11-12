@@ -122,9 +122,10 @@ public class TriploxNode implements AutoCloseable {
     /**
      * Register an incremental query and stream its result deltas.
      *
-     * <p>Subscribes at the latest indexed basis. A non-empty initial result is
-     * emitted first at that basis. The returned {@link Subscription} is an
-     * {@link AutoCloseable}; closing it cancels the stream and unsubscribes.</p>
+     * <p>Subscribes at the latest indexed basis. The initial result is emitted
+     * first at that basis. Later deltas arrive once per indexed batch.
+     * The returned {@link Subscription} is an {@link AutoCloseable}; closing it
+     * cancels the stream and unsubscribes.</p>
      */
     public Subscription subscribe(String edn) throws IOException {
         return subscribe(edn, List.of());

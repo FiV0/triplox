@@ -87,7 +87,6 @@ impl Batch {
 
 pub(super) trait Circuit: Send + 'static {
     fn prime(&mut self, basis: TxKey) -> impl Future<Output = Result<Rows>> + Send;
-    fn matches(&self, batch: &Batch) -> bool;
     fn apply(&mut self, batch: &Batch) -> impl Future<Output = Result<Rows>> + Send;
 }
 
@@ -107,10 +106,6 @@ impl Circuit for SnapshotCircuit {
         )
         .await?;
         self.circuit.prime(triples).await
-    }
-
-    fn matches(&self, batch: &Batch) -> bool {
-        self.circuit.matches(batch)
     }
 
     fn apply(&mut self, batch: &Batch) -> impl Future<Output = Result<Rows>> + Send {
@@ -173,14 +168,12 @@ async fn serve<C: Circuit>(
     if stop.token.is_cancelled() {
         return Ok(());
     }
-    if !rows.is_empty() {
-        sender
-            .try_send(IncrementalQueryDelta {
-                tx_key: basis,
-                rows,
-            })
-            .expect("new subscription queue has room for priming");
-    }
+    sender
+        .try_send(IncrementalQueryDelta {
+            tx_key: basis,
+            rows,
+        })
+        .expect("new subscription queue has room for priming");
     let (subscription, response) = registration.take().expect("priming registration");
     if response.send(Ok(subscription)).is_err() {
         return Ok(());
@@ -192,16 +185,11 @@ async fn serve<C: Circuit>(
             _ = sender.closed() => break,
             batch = inbox.recv() => match batch { Some(batch) => batch, None => break },
         };
-        if !circuit.matches(&batch) {
-            continue;
-        }
         // A started step always finishes. A stop takes effect between steps.
+        // An unmatched batch gives no rows but still sends a delta, so the subscriber sees progress.
         let rows = circuit.apply(&batch).await?;
         if stop.token.is_cancelled() {
             break;
-        }
-        if rows.is_empty() {
-            continue;
         }
         tokio::select! {
             biased;

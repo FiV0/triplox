@@ -572,12 +572,6 @@ impl QueryCircuit {
         self.step(triples).await
     }
 
-    pub(super) fn matches(&self, batch: &Batch) -> bool {
-        self.attribute_ids
-            .iter()
-            .any(|attribute| !batch.attribute_triples(*attribute).is_empty())
-    }
-
     // Applies a transaction after priming, copying only the triples the plan's attributes can match.
     // Once priming has stepped, an empty input changes nothing, so the step is skipped.
     pub(super) async fn apply(&mut self, batch: &Batch) -> Result<Vec<(Vec<DataType>, isize)>> {
@@ -855,29 +849,6 @@ mod tests {
     }
 
     #[test]
-    fn query_circuit_matches_only_its_attributes() {
-        let storage = tempfile::tempdir().unwrap();
-        let plan = query_plan(
-            "{:find [?name ?age]
-              :where [[?e :name ?name]
-                      [?e :age ?age]]}",
-        );
-        let circuit = build_query_circuit(plan, storage.path());
-        let tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
-        assert!(!circuit.matches(&single_batch(tx_key, vec![])));
-        assert!(!circuit.matches(&single_batch(
-            tx_key,
-            vec![Tup2(triple(42, TYPE, "person".into()), 1)],
-        )));
-        for attribute in [NAME, AGE] {
-            assert!(circuit.matches(&single_batch(
-                tx_key,
-                vec![Tup2(triple(42, attribute, 30_i64.into()), 1)],
-            )));
-        }
-    }
-
-    #[test]
     fn query_circuit_primes_empty_count_and_applies_updates() {
         let storage = tempfile::tempdir().unwrap();
         let plan = query_plan(
@@ -893,12 +864,14 @@ mod tests {
             step(&mut circuit, vec![]).unwrap(),
             vec![(vec![DataType::Long(0)], 1)]
         );
-        // An unrelated transaction leaves the primed count unchanged.
-        let batch = single_batch(tx_key, vec![name.clone()]);
-        assert_eq!(
-            futures::executor::block_on(circuit.apply(&batch)).unwrap(),
-            vec![]
-        );
+        // An empty or unrelated transaction leaves the primed count unchanged.
+        for triples in [vec![], vec![name.clone()]] {
+            let batch = single_batch(tx_key, triples);
+            assert_eq!(
+                futures::executor::block_on(circuit.apply(&batch)).unwrap(),
+                vec![]
+            );
+        }
         let batch = single_batch(tx_key, vec![name, age]);
         let mut rows = futures::executor::block_on(circuit.apply(&batch)).unwrap();
         rows.sort_by_key(|(_, weight)| *weight);

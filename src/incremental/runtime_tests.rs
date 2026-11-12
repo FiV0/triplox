@@ -7,6 +7,8 @@ use std::sync::mpsc as sync_mpsc;
 use std::time::Duration;
 use tempfile::TempDir;
 
+// Triple attribute that `Probe` treats as not touching the query.
+const UNMATCHED: i64 = 0;
 // Longest wait for an event that must occur.
 const WAIT: Duration = Duration::from_secs(5);
 // Retirement timeout for the tests in which the timeout must expire.
@@ -42,11 +44,11 @@ impl Circuit for Probe {
         Ok(std::mem::take(&mut self.config.priming))
     }
 
-    fn matches(&self, _batch: &Batch) -> bool {
-        true
-    }
-
     async fn apply(&mut self, batch: &Batch) -> Result<worker::Rows> {
+        // Like `QueryCircuit`, an unmatched batch returns no rows without a step.
+        if batch.triples().iter().all(|t| t.0.attribute == UNMATCHED) {
+            return Ok(vec![]);
+        }
         // Test batches are numbered by their offset from the bootstrap tx.
         let seq = batch.tx_key.tx_id - crate::bootstrap::BOOTSTRAP_TX_KEY.tx_id;
         let _ = self.steps.send(seq);
@@ -76,7 +78,7 @@ fn assert_dropped(drops: Vec<sync_mpsc::Receiver<bool>>) {
 }
 
 // A batch of one transaction, `seq` transactions after the bootstrap tx.
-fn batch(seq: i64) -> Batch {
+fn batch(seq: i64, matched: bool) -> Batch {
     let mut tx_key = *crate::bootstrap::BOOTSTRAP_TX_KEY;
     tx_key.tx_id += seq;
     single_batch(
@@ -84,12 +86,19 @@ fn batch(seq: i64) -> Batch {
         vec![Tup2(
             EncodedTriple {
                 entity: vec![],
-                attribute: 1,
+                attribute: if matched { 1 } else { UNMATCHED },
                 value: vec![],
             },
             1,
         )],
     )
+}
+
+fn empty_delta(tx_key: TxKey) -> IncrementalQueryDelta {
+    IncrementalQueryDelta {
+        tx_key,
+        rows: vec![],
+    }
 }
 
 async fn started(steps: &mut mpsc::UnboundedReceiver<i64>) -> i64 {
@@ -124,7 +133,7 @@ struct Dispatcher {
 
 impl Dispatcher {
     async fn apply(&self, seq: i64) -> TxKey {
-        let batch = batch(seq);
+        let batch = batch(seq, true);
         let tx_key = batch.tx_key;
         within(apply_batch(&self.batches, batch)).await.unwrap();
         tx_key
@@ -204,8 +213,14 @@ impl Fixture {
         &mut self,
         config: ProbeConfig,
     ) -> (IncrementalQuerySubscription, mpsc::UnboundedReceiver<i64>) {
+        let priming = config.priming.clone();
         let mut pending = self.register(config);
-        (pending.result().await.unwrap(), pending.steps)
+        let mut query = pending.result().await.unwrap();
+        // Takes the priming delta, so the tests see only the deltas of later batches.
+        let delta = next(&mut query).await.unwrap();
+        assert_eq!(delta.tx_key, *crate::bootstrap::BOOTSTRAP_TX_KEY);
+        assert_eq!(delta.rows, priming);
+        (query, pending.steps)
     }
 
     async fn query(&mut self) -> (IncrementalQuerySubscription, mpsc::UnboundedReceiver<i64>) {
@@ -241,11 +256,20 @@ impl Fixture {
         (release, pending)
     }
 
-    fn apply(&self, seq: i64) -> TxKey {
-        let batch = Arc::new(batch(seq));
+    fn route(&self, seq: i64, matched: bool) -> TxKey {
+        let batch = Arc::new(batch(seq, matched));
         let tx_key = batch.tx_key;
         self.inner.apply_batch(batch);
         tx_key
+    }
+
+    fn apply(&self, seq: i64) -> TxKey {
+        self.route(seq, true)
+    }
+
+    // Routes a batch that the probe does not match.
+    fn apply_unmatched(&self, seq: i64) -> TxKey {
+        self.route(seq, false)
     }
 
     fn stop(&self, handle: IncrementalQueryHandle) -> Arc<StopSignal> {
@@ -405,6 +429,75 @@ async fn full_output_can_resume_without_termination() {
         );
     }
     assert!(!fixture.stop(query.handle).token.is_cancelled());
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn unmatched_batch_sends_empty_delta_without_apply() {
+    let mut fixture = Fixture::new(4).await;
+    let (mut query, mut steps) = fixture.query().await;
+    let first = fixture.apply(1);
+    let unmatched = fixture.apply_unmatched(2);
+    let third = fixture.apply(3);
+    assert_eq!(next(&mut query).await.unwrap().tx_key, first);
+    assert_eq!(next(&mut query).await.unwrap(), empty_delta(unmatched));
+    assert_eq!(next(&mut query).await.unwrap().tx_key, third);
+    // The third delta arrived, so the probe already reported each apply.
+    assert_eq!(started(&mut steps).await, 1);
+    assert_eq!(started(&mut steps).await, 3);
+    assert!(steps.try_recv().is_err());
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn unmatched_batch_waits_behind_running_apply() {
+    let mut fixture = Fixture::new(4).await;
+    let (mut query, mut steps, release) = fixture.gated_query().await;
+    let first = fixture.apply(1);
+    let unmatched = fixture.apply_unmatched(2);
+    let third = fixture.apply(3);
+    assert_eq!(started(&mut steps).await, 1);
+    // The first apply still runs, so the empty delta cannot overtake it.
+    assert!(query.deltas.try_recv().is_err());
+    release.send(()).unwrap();
+    assert_eq!(next(&mut query).await.unwrap().tx_key, first);
+    assert_eq!(next(&mut query).await.unwrap(), empty_delta(unmatched));
+    assert_eq!(started(&mut steps).await, 3);
+    release.send(()).unwrap();
+    assert_eq!(next(&mut query).await.unwrap().tx_key, third);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn unmatched_batch_routed_during_build_sends_empty_delta() {
+    let mut fixture = Fixture::new(2).await;
+    let (release, mut pending) = fixture.gated_build(vec![]);
+    let unmatched = fixture.apply_unmatched(1);
+    let second = fixture.apply(2);
+    release.send(()).unwrap();
+    let mut query = pending.result().await.unwrap();
+    let basis = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+    assert_eq!(next(&mut query).await.unwrap(), empty_delta(basis));
+    assert_eq!(next(&mut query).await.unwrap(), empty_delta(unmatched));
+    assert_eq!(next(&mut query).await.unwrap().tx_key, second);
+    assert_eq!(started(&mut pending.steps).await, 2);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn unmatched_batches_count_against_inbox_capacity() {
+    let mut fixture = Fixture::new(1).await;
+    let (mut query, mut steps, release) = fixture.gated_query().await;
+    fixture.apply(1);
+    // The worker took the first batch, so the inbox is empty again.
+    started(&mut steps).await;
+    fixture.apply_unmatched(2);
+    let overflow = fixture.apply_unmatched(3);
+    let error = next(&mut query).await.unwrap_err();
+    let lagged = error.downcast_ref::<SubscriptionLagged>().unwrap();
+    assert_eq!(lagged.tx_key, overflow);
+    release.send(()).unwrap();
+    assert_eq!(fixture.retire().await, query.handle);
     fixture.finish().await;
 }
 
@@ -655,6 +748,8 @@ async fn unregister_is_not_blocked_by_registration() {
     service.unregister(query.handle).await.unwrap();
     release.send(()).unwrap();
     let mut registered = pending.result().await.unwrap();
+    let basis = *crate::bootstrap::BOOTSTRAP_TX_KEY;
+    assert_eq!(next(&mut registered).await.unwrap(), empty_delta(basis));
     let tx_key = dispatcher.apply(1).await;
     assert_eq!(next(&mut registered).await.unwrap().tx_key, tx_key);
     service.shutdown().await.unwrap();
