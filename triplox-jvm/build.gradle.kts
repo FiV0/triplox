@@ -83,6 +83,13 @@ tasks.withType<JavaCompile>().configureEach {
     options.release.set(21)
 }
 
+// Run tests on another JDK with -PtestJavaVersion=21.
+(findProperty("testJavaVersion") as String?)?.let { version ->
+    tasks.withType<Test>().configureEach {
+        javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(version.toInt())) })
+    }
+}
+
 mavenPublishing {
     publishToMavenCentral()
 
