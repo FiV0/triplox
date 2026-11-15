@@ -69,6 +69,8 @@
         (cond
           (= ::tc/timeout delta) nil
           (nil? delta) (throw (ex-info "Subscription ended" {:query-id id}))
+          ;; The server sends an empty delta for each batch that leaves the result unchanged.
+          (empty? delta) nil
           :else (let [updated (swap! rows live/apply-delta delta)
                       applied (System/nanoTime)]
                   (swap! tracker measure/record-delivery (:tx-id (tc/tx-key sub)) id updated applied)))))
@@ -79,12 +81,11 @@
 (defn- prime!
   "Apply the subscription's initial result and check it against the model."
   [{:keys [id sub rows] :as entry} model]
-  (let [expected (live/result-rows model entry)]
-    (when (seq expected)
-      (let [delta (tc/take! sub 10000)]
-        (when (or (nil? delta) (= ::tc/timeout delta))
-          (throw (ex-info "Priming timed out" {:query-id id})))
-        (swap! rows live/apply-delta delta)))
+  (let [expected (live/result-rows model entry)
+        delta (tc/take! sub 10000)]
+    (when (or (nil? delta) (= ::tc/timeout delta))
+      (throw (ex-info "Priming timed out" {:query-id id})))
+    (swap! rows live/apply-delta delta)
     (when-not (= expected @rows)
       (throw (ex-info "Incorrect priming result" {:query-id id})))))
 
