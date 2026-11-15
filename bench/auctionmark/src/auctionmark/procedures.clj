@@ -381,7 +381,7 @@
               (.size ^ConcurrentLinkedQueue (:items-open state))
               "waiting=" (.size ^ConcurrentLinkedQueue (:items-waiting state))
               "closed=" (.size ^ConcurrentLinkedQueue (:items-closed state)))
-    #_state))
+    state))
 
 ;; ---------------------------------------------------------------------------
 ;; Helper: pick random items from queues
