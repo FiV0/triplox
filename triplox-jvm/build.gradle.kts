@@ -30,24 +30,25 @@ val triploxVersion = (findProperty("triploxVersion") as String?) ?: workspaceVer
 dependencies {
     // Clojure
     // TODO Keyword currently leaks into the public API
-    api("org.clojure", "clojure", "1.12.3")
-    implementation("org.clojure", "core.async", "1.9.865")
+    api("org.clojure:clojure:1.12.3")
+    implementation("org.clojure:core.async:1.9.865")
 
     // MessagePack wire codec
     implementation("org.msgpack:msgpack-core:0.9.8")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // logging
-    implementation("org.clojure", "tools.logging", "1.3.0")
-    implementation("ch.qos.logback", "logback-classic", "1.4.5")
+    implementation("org.clojure:tools.logging:1.3.0")
+    implementation("ch.qos.logback:logback-classic:1.4.5")
 
     // test
     testImplementation("org.junit.jupiter:junit-jupiter-api:5.9.0")
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.9.0")
-    testRuntimeOnly("dev.clojurephant", "jovial", "0.4.1")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.9.0")
+    testRuntimeOnly("dev.clojurephant:jovial:0.4.1")
 
     // dev
-    nrepl("cider", "cider-nrepl", "0.58.0")
+    nrepl("cider:cider-nrepl:0.58.0")
 }
 
 tasks.test {
@@ -58,6 +59,8 @@ tasks.test {
 }
 
 tasks.register<Test>("integrationTest") {
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
     useJUnitPlatform()
     include("**/integration/**", "**/datascript/**", "**/Integration*")
     systemProperty("triplox.host", System.getenv("TRIPLOX_HOST") ?: "localhost")
@@ -73,7 +76,12 @@ tasks.checkClojure {
     enabled = false
 }
 
-java.toolchain.languageVersion.set(JavaLanguageVersion.of(21))
+java.toolchain.languageVersion.set(JavaLanguageVersion.of(25))
+
+// Build on JDK 25 but publish Java 21 bytecode so JDK 21 users can still use the client.
+tasks.withType<JavaCompile>().configureEach {
+    options.release.set(21)
+}
 
 mavenPublishing {
     publishToMavenCentral()
