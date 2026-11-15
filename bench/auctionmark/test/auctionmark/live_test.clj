@@ -20,8 +20,11 @@
 (defn- apply-next-delta! [{:keys [sub rows]}]
   (swap! rows live/apply-delta (tc/take! sub 5000)))
 
-(defn- assert-no-delta [{:keys [sub]}]
-  (is (= ::tc/timeout (tc/take! sub 20))))
+(defn- assert-empty-delta
+  "An unchanged result still gets an empty delta for the transaction."
+  [{:keys [sub]} tx-id]
+  (is (= [] (tc/take! sub 5000)))
+  (is (= tx-id (:tx-id (tc/tx-key sub)))))
 
 (def auction-changes
   [[{:db/id [:item/id 0] :item/current-price 200.0 :item/num-bids 2}]
@@ -45,12 +48,10 @@
           model (atom baseline)
           subs (mapv #(assoc % :sub (tc/subscribe conn (:query %)) :rows (atom {})) descriptors)]
       (try
+        ;; The priming delta arrives also for an empty result.
         (doseq [s subs]
-          (let [expected (live/result-rows @model s)]
-            (if (seq expected)
-              (apply-next-delta! s)
-              (assert-no-delta s))
-            (is (= expected @(:rows s)))))
+          (apply-next-delta! s)
+          (is (= (live/result-rows @model s) @(:rows s))))
         (doseq [tx auction-changes]
           (let [before @model
                 after (live/apply-tx before tx)
@@ -58,7 +59,7 @@
             (doseq [s subs]
               (let [expected (live/result-rows after s)]
                 (if (= expected (live/result-rows before s))
-                  (assert-no-delta s)
+                  (assert-empty-delta s (:tx-id result))
                   (do
                     (apply-next-delta! s)
                     (is (= (:tx-id result) (:tx-id (tc/tx-key (:sub s)))))))
