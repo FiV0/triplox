@@ -55,8 +55,7 @@
                 :query (fn [& _] [])
                 :schema! #(record! :schema)
                 :view! (fn [_] (reify java.lang.AutoCloseable (close [_])))
-                :view-updated (fn [_] (record! :await) (System/nanoTime))
-                :view-rows (constantly [])
+                :await-view! (fn [_ tx _] (record! :await) {:rows [] :tx-key tx})
                 :close! #(record! :close)}]
     (with-redefs [data/load-data! (fn [& _] (record! :load)
                                        {:transactions 1 :table-counts {:title 1} :last-tx {:tx-id 7}})
@@ -64,8 +63,7 @@
                   artifacts/write-json! (fn [& _] (record! :write))
                   artifacts/save-result! (fn [& _] (record! :write) {})]
       (runner/run! engine {:engine-name "triplox-incremental" :query-ids ["1a"]
-                           :output "unused" :timeout-ms 1000 :catchup-timeout-ms 1000
-                           :quiet-ms 0})
+                           :output "unused" :timeout-ms 1000 :catchup-timeout-ms 1000})
       (is (= :await (nth @calls (inc (.indexOf @calls :load))))))))
 
 (defn with-loaded-run [engine-name standard-rows f]
@@ -82,12 +80,11 @@
                            (close [_])
                            Object
                            (toString [_] id)))
-                :view-updated (fn [_] (System/nanoTime))
-                :view-rows (fn [view] [[(str view) @current]])
+                :await-view! (fn [view tx _]
+                               {:rows [[(str view) (:tx-id tx)]] :tx-key tx})
                 :close! (constantly nil)}
         config {:engine-name engine-name :query-ids ["1a" "2a"]
-                :output (str directory) :timeout-ms 1000 :catchup-timeout-ms 1000
-                :quiet-ms 0}]
+                :output (str directory) :timeout-ms 1000 :catchup-timeout-ms 1000}]
     (try
       (with-redefs [data/load-data! (fn [_ _ transact! & _]
                                      (transact! [{:step 1}])
