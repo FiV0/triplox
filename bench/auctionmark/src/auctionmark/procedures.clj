@@ -7,7 +7,6 @@
             [xyz.triplox.api :as tc]
             [auctionmark.schema :as schema])
   (:import [java.util Random]
-           [java.util.concurrent ConcurrentLinkedQueue]
            [java.util.concurrent.atomic AtomicLong]
            [java.time Instant]))
 
@@ -16,6 +15,45 @@
 ;; ---------------------------------------------------------------------------
 
 (defrecord ItemSample [item-id seller-id])
+
+;; A pool is a set of items with O(1) add, remove and random pick.
+;; :index maps each item to its position in :items.
+(defn make-pool []
+  (atom {:items [] :index {}}))
+
+(defn pool-add! [pool item]
+  (swap! pool (fn [{:keys [items index] :as p}]
+                (if (contains? index item)
+                  p
+                  {:items (conj items item)
+                   :index (assoc index item (count items))}))))
+
+(defn- remove-item [{:keys [items index] :as p} item]
+  (if-let [i (get index item)]
+    ;; the last item moves into the gap
+    (let [moved (peek items)]
+      {:items (pop (assoc items i moved))
+       :index (-> index (assoc moved i) (dissoc item))})
+    p))
+
+(defn pool-remove! [pool item]
+  (swap! pool remove-item item))
+
+(defn pool-take!
+  "Remove and return one item, or nil if the pool is empty."
+  [pool]
+  (let [[old _] (swap-vals! pool (fn [p]
+                                   (if-let [item (peek (:items p))]
+                                     (remove-item p item)
+                                     p)))]
+    (peek (:items old))))
+
+(defn pool-pick [pool ^Random rng]
+  (let [items (:items @pool)]
+    (when (seq items) (random/uniform-nth rng items))))
+
+(defn pool-size [pool]
+  (count (:items @pool)))
 
 (defn make-state
   "Create shared benchmark state. Thread-safe."
@@ -42,10 +80,10 @@
    :category-ids     (atom [])            ; flat vector of category app-ids
    :gag-ids          (atom [])
    :gav-ids          (atom [])
-   ;; item status queues — thread-safe
-   :items-open       (ConcurrentLinkedQueue.)
-   :items-waiting    (ConcurrentLinkedQueue.)
-   :items-closed     (ConcurrentLinkedQueue.)})
+   ;; item status pools — thread-safe
+   :items-open       (make-pool)
+   :items-waiting    (make-pool)
+   :items-closed     (make-pool)})
 
 ;; ---------------------------------------------------------------------------
 ;; Helpers
@@ -244,11 +282,11 @@
                                             :item-image/path (str "/img/" item-id "/" i ".jpg")}))
                                        (range num-images))
                       sample (->ItemSample item-id seller-id)]
-                  ;; track in status queues
+                  ;; track in status pools
                   (case status
-                    :open (.add ^ConcurrentLinkedQueue (:items-open state) sample)
-                    :waiting-for-purchase (.add ^ConcurrentLinkedQueue (:items-waiting state) sample)
-                    :closed (.add ^ConcurrentLinkedQueue (:items-closed state) sample))
+                    :open (pool-add! (:items-open state) sample)
+                    :waiting-for-purchase (pool-add! (:items-waiting state) sample)
+                    :closed (pool-add! (:items-closed state) sample))
                   (into (conj acc item-doc) image-docs)))
               []
               (range chunk-start chunk-end))]
@@ -260,7 +298,7 @@
   "Each user watches 0-5 random open items."
   [conn state ^Random rng]
   (let [user-ids @(:users state)
-        open-items (vec (.toArray ^ConcurrentLinkedQueue (:items-open state)))]
+        open-items (:items @(:items-open state))]
     (when (seq open-items)
       (let [docs (into []
                        (mapcat
@@ -302,9 +340,9 @@
 
 (defn log-item-counts [state]
   (log/info "Load complete. Items: open="
-            (.size ^ConcurrentLinkedQueue (:items-open state))
-            "waiting=" (.size ^ConcurrentLinkedQueue (:items-waiting state))
-            "closed=" (.size ^ConcurrentLinkedQueue (:items-closed state))))
+            (pool-size (:items-open state))
+            "waiting=" (pool-size (:items-waiting state))
+            "closed=" (pool-size (:items-closed state))))
 
 (defn load-data!
   "Load all AuctionMark data. Returns state."
@@ -318,29 +356,23 @@
     state))
 
 ;; ---------------------------------------------------------------------------
-;; Helper: pick random items from queues
+;; Helper: pick random items from pools
 ;; ---------------------------------------------------------------------------
 
-(defn- queue->vec [^ConcurrentLinkedQueue q]
-  (vec (.toArray q)))
-
 (defn pick-random-open [^Random rng state]
-  (let [v (queue->vec (:items-open state))]
-    (when (seq v) (random/uniform-nth rng v))))
+  (pool-pick (:items-open state) rng))
 
 (defn pick-random-waiting [^Random rng state]
-  (let [v (queue->vec (:items-waiting state))]
-    (when (seq v) (random/uniform-nth rng v))))
+  (pool-pick (:items-waiting state) rng))
 
 (defn pick-random-closed [^Random rng state]
-  (let [v (queue->vec (:items-closed state))]
-    (when (seq v) (random/uniform-nth rng v))))
+  (pool-pick (:items-closed state) rng))
 
 (defn pick-random-user [^Random rng state]
   (random/uniform-nth rng @(:users state)))
 
 (defn pick-random-item
-  "Pick from any status queue."
+  "Pick from any status pool."
   [^Random rng state]
   (let [choice (.nextInt rng 3)]
     (case choice
@@ -464,8 +496,7 @@
       (tc/transact conn
                    [{:db/id [:user/id seller-id]
                      :user/balance (- (double balance) 1.0)}]))
-    (.add ^ConcurrentLinkedQueue (:items-open state)
-          (->ItemSample item-id seller-id))))
+    (pool-add! (:items-open state) (->ItemSample item-id seller-id))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 4: get-user-info (10%)
@@ -554,7 +585,7 @@
 (defn proc-new-purchase
   "Complete a purchase for a waiting item."
   [conn ^Random rng state]
-  (when-let [item (.poll ^ConcurrentLinkedQueue (:items-waiting state))]
+  (when-let [item (pool-take! (:items-waiting state))]
     (let [item-id (:item-id item)
           bids (tc/q (tc/db conn)
                      '{:find [?bid-id ?bid-amount]
@@ -577,7 +608,7 @@
                        {:item-purchase/bid-id [:item-bid/id winning-bid-id]}))
                     {:db/id [:item/id item-id]
                      :item/status :closed}])
-      (.add ^ConcurrentLinkedQueue (:items-closed state) item))))
+      (pool-add! (:items-closed state) item))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 9: new-comment (2%)
@@ -678,7 +709,8 @@
         ;; move items from open to waiting
         (doseq [[item-id seller-id] expired]
           (let [sample (->ItemSample item-id seller-id)]
-            (.add ^ConcurrentLinkedQueue (:items-waiting state) sample)))))))
+            (pool-remove! (:items-open state) sample)
+            (pool-add! (:items-waiting state) sample)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 14: post-auction (periodic, after check-winning-bid)
@@ -689,7 +721,7 @@
   [conn ^Random rng state]
   ;; close up to 10 waiting items
   (dotimes [_ 10]
-    (when-let [item (.poll ^ConcurrentLinkedQueue (:items-waiting state))]
+    (when-let [item (pool-take! (:items-waiting state))]
       (tc/transact conn
         [{:db/id [:item/id (:item-id item)]
           :item/status :closed}
@@ -697,4 +729,4 @@
           :item-purchase/item-id [:item/id (:item-id item)]
           :item-purchase/user-id [:user/id (:seller-id item)]
           :item-purchase/date (now-instant)}])
-      (.add ^ConcurrentLinkedQueue (:items-closed state) item))))
+      (pool-add! (:items-closed state) item))))

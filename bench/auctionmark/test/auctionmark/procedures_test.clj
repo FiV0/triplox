@@ -5,8 +5,7 @@
             [auctionmark.schema :as schema]
             [auctionmark.procedures :as proc])
   (:import [java.util Random]
-           [java.time Instant]
-           [java.util.concurrent ConcurrentLinkedQueue]))
+           [java.time Instant]))
 
 ;; ---------------------------------------------------------------------------
 ;; Fixture & helpers
@@ -237,8 +236,10 @@
 
         (is (= 0 (count (tc/q (db) open-q))) "no open items remain")
         (is (= 2 (count (tc/q (db) wait-q))) "both items now waiting-for-purchase")
-        (is (= 2 (.size ^ConcurrentLinkedQueue (:items-waiting *state*)))
-            "and tracked in the waiting queue")))))
+        (is (= 0 (proc/pool-size (:items-open *state*)))
+            "removed from the open pool")
+        (is (= 2 (proc/pool-size (:items-waiting *state*)))
+            "and tracked in the waiting pool")))))
 
 (deftest proc-get-comment-test
   (with-redefs [proc/sample-status (constantly :open)
@@ -265,3 +266,22 @@
         res (proc/proc-get-user-info *conn* *rng* *state*)]
     (is (= 1 (count res)))
     (is (= [0 0.0] (vec (take 2 (first res)))) "rating 0, balance 0.0")))
+
+(deftest pool-test
+  (let [pool (proc/make-pool)
+        rng (Random. 42)]
+    (is (nil? (proc/pool-pick pool rng)))
+    (is (nil? (proc/pool-take! pool)))
+    (doseq [x [:a :b :c :a]]
+      (proc/pool-add! pool x))
+    (is (= 3 (proc/pool-size pool)) "a duplicate add does nothing")
+
+    (proc/pool-remove! pool :a)
+    (proc/pool-remove! pool :missing)
+    (is (= #{:b :c} (set (:items @pool))))
+    (is (= {:b 1 :c 0} (:index @pool)) "the last item moved into the gap")
+    (is (contains? #{:b :c} (proc/pool-pick pool rng)))
+
+    (is (= #{:b :c} (set [(proc/pool-take! pool) (proc/pool-take! pool)])))
+    (is (= 0 (proc/pool-size pool)))
+    (is (nil? (proc/pool-take! pool)))))
