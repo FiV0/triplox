@@ -706,7 +706,7 @@
 
 (defn proc-new-comment-response
   "Seller responds to a question."
-  [conn ^Random _rng state]
+  [conn ^Random rng state]
   (let [unanswered
         (tc/q (tc/db conn)
               '{:find [?comment-id]
@@ -714,7 +714,7 @@
                         [?c :item-comment/id ?comment-id]]
                 :limit 10})]
     (when (seq unanswered)
-      (let [comment-id (first (rand-nth unanswered))]
+      (let [comment-id (first (nth unanswered (.nextInt rng (count unanswered))))]
         (tc/transact conn
                      [{:db/id [:item-comment/id comment-id]
                        :item-comment/response "Thanks for asking!"
