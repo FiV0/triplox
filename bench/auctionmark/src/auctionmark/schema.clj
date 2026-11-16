@@ -194,13 +194,11 @@
     :db/cardinality :db.cardinality/one}
 
    ;; --- Item Max Bid ---
-   {:db/ident :item-max-bid/id
-    :db/valueType :db.type/long
-    :db/cardinality :db.cardinality/one
-    :db/unique :db.unique/identity}
+   ;; one record per item, keyed by the item
    {:db/ident :item-max-bid/item-id
     :db/valueType :db.type/ref
-    :db/cardinality :db.cardinality/one}
+    :db/cardinality :db.cardinality/one
+    :db/unique :db.unique/identity}
    {:db/ident :item-max-bid/user-id
     :db/valueType :db.type/ref
     :db/cardinality :db.cardinality/one}

@@ -67,7 +67,6 @@
    :item-counter     (AtomicLong. 0)
    :image-counter    (AtomicLong. 0)
    :bid-counter      (AtomicLong. 0)
-   :max-bid-counter  (AtomicLong. 0)
    :comment-counter  (AtomicLong. 0)
    :feedback-counter (AtomicLong. 0)
    :purchase-counter (AtomicLong. 0)
@@ -440,7 +439,6 @@
         (let [new-price (* (double current-price) (+ 1.0 (* (.nextDouble rng) 0.1)))
               bid-id (next-id (:bid-counter state))
               bid-tempid (str "bid-" bid-id)
-              max-bid-id (next-id (:max-bid-counter state))
               now (now-instant)]
           (tc/transact conn
                        [{:db/id bid-tempid
@@ -455,14 +453,13 @@
                         {:db/id [:item/id item-id]
                          :item/current-price new-price
                          :item/num-bids (inc (long num-bids))}
-                        ;; always create a new max-bid record (first bid has no existing record to upsert)
-                        {:item-max-bid/id max-bid-id
-                         :item-max-bid/item-id [:item/id item-id]
-                         :item-max-bid/user-id [:user/id (:seller-id item)]
-                         :item-max-bid/bid-id bid-tempid
-                         :item-max-bid/buyer-id [:user/id buyer-id]
-                         :item-max-bid/created now
-                         :item-max-bid/updated now}]))))))
+                        ;; upserts the item's single max-bid record
+                        (cond-> {:item-max-bid/item-id [:item/id item-id]
+                                 :item-max-bid/user-id [:user/id (:seller-id item)]
+                                 :item-max-bid/bid-id bid-tempid
+                                 :item-max-bid/buyer-id [:user/id buyer-id]
+                                 :item-max-bid/updated now}
+                          (zero? (long num-bids)) (assoc :item-max-bid/created now))]))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 3: new-item (10%)

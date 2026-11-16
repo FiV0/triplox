@@ -143,16 +143,29 @@
                                           [?i :item/id ?item-id]]}))))
 
       (testing "a max-bid record exists for item 0"
-        (is (= 1 (count-of :item-max-bid/id)))
-        (is (= [[0]] (tc/q (db) '{:find [?item-id]
-                                  :where [[?m :item-max-bid/id 0]
-                                          [?m :item-max-bid/item-id ?i]
-                                          [?i :item/id ?item-id]]}))))
+        (is (= 1 (count-of :item-max-bid/item-id)))
+        (is (= [[0 0]] (tc/q (db) '{:find [?item-id ?bid-id]
+                                    :where [[?m :item-max-bid/item-id ?i]
+                                            [?i :item/id ?item-id]
+                                            [?m :item-max-bid/bid-id ?b]
+                                            [?b :item-bid/id ?bid-id]]}))))
+
+      (testing "a second bid updates the same max-bid record"
+        (let [created-q '{:find [?created]
+                          :where [[?m :item-max-bid/created ?created]]}
+              created (ffirst (tc/q (db) created-q))]
+          (proc/proc-new-bid *conn* *rng* *state*)
+          (is (= 2 (count-of :item-bid/id)))
+          (is (= 1 (count-of :item-max-bid/item-id)))
+          (is (= [[1]] (tc/q (db) '{:find [?bid-id]
+                                    :where [[?m :item-max-bid/bid-id ?b]
+                                            [?b :item-bid/id ?bid-id]]})))
+          (is (= [[created]] (tc/q (db) created-q)) "created is kept")))
 
       ;; NOTE: the XTDB suite also asserts "new bid but does not exceed max" and
-      ;; "new exceeds max bid". This Triplox `proc-new-bid` always inserts a fresh
-      ;; max-bid record (no read-compare-against-current-max, no `random-price`
-      ;; hook), so those scenarios have no equivalent here and are not ported.
+      ;; "new exceeds max bid". This Triplox `proc-new-bid` always makes the
+      ;; latest bid the max bid (no read-compare-against-current-max, no
+      ;; `random-price` hook), so those scenarios are not ported.
       )))
 
 (deftest proc-new-item-test
