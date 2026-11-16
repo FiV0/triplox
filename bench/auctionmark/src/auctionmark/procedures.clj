@@ -1,15 +1,15 @@
 (ns auctionmark.procedures
   "AuctionMark data generation, loading, and all 14 benchmark procedures."
-  (:require [clojure.java.io :as io]
+  (:require [benchy.random :as random]
+            [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.logging :as log]
             [xyz.triplox.api :as tc]
             [auctionmark.schema :as schema])
-  (:import [java.util Random Comparator]
+  (:import [java.util Random]
            [java.util.concurrent ConcurrentLinkedQueue]
            [java.util.concurrent.atomic AtomicLong]
-           [java.time Instant]
-           [com.google.common.collect MinMaxPriorityQueue]))
+           [java.time Instant]))
 
 ;; ---------------------------------------------------------------------------
 ;; State
@@ -38,6 +38,7 @@
    :users            (atom [])            ; vector of user app-ids (longs)
    :regions          (atom [])            ; vector of region app-ids
    :categories       (atom [])            ; vector of {:id :name :weight}
+   :category-sampler (atom nil)           ; (f rng) -> category, weighted by :weight
    :category-ids     (atom [])            ; flat vector of category app-ids
    :gag-ids          (atom [])
    :gav-ids          (atom [])
@@ -52,61 +53,6 @@
 
 (defn next-id [^AtomicLong counter]
   (.getAndIncrement counter))
-
-(defn rand-string
-  "Random alphanumeric string of length n."
-  [^Random rng n]
-  (let [chars "abcdefghijklmnopqrstuvwxyz0123456789"
-        sb (StringBuilder. n)]
-    (dotimes [_ n]
-      (.append sb (.charAt chars (.nextInt rng (count chars)))))
-    (.toString sb)))
-
-(defn rand-nth-vec
-  "Random element from a vector using the given RNG."
-  [^Random rng v]
-  (when (seq v)
-    (nth v (.nextInt rng (count v)))))
-
-(defn rand-gaussian
-  "Sample from a Gaussian distribution clamped to [0, n)."
-  [^Random rng n]
-  (let [raw (Math/abs (.nextGaussian rng))
-        scaled (int (* (/ raw 3.0) n))]
-    (min (max scaled 0) (dec n))))
-
-(defn weighted-sample-fn
-  "Aliased random sampler:
-
-  https://www.peterstefek.me/alias-method.html
-
-  Given a seq of weight, return a function who when given a Random will return an index according to the weight distribution."
-  [weights]
-  (case (count weights)
-    0 nil
-    1 (fn [_rng] 0)
-    (let [total (reduce + weights)
-          normalized-weights (mapv (fn [weight] (double (/ weight total))) weights)
-          len (count normalized-weights)
-          pq (doto (.create (MinMaxPriorityQueue/orderedBy ^Comparator (fn [[_ w] [_ w2]] (compare w w2))))
-               (.addAll (mapv vector (range len) normalized-weights)))
-          avg (/ 1.0 len)
-          parts (object-array len)
-          epsilon 0.00001]
-      (dotimes [i len]
-        (let [[smallest small-weight] (.pollFirst pq)
-              overfill (- avg small-weight)]
-          (if (< epsilon overfill)
-            (let [[largest large-weight] (.pollLast pq)
-                  new-weight (- large-weight overfill)]
-              (when (< epsilon new-weight)
-                (.add pq [largest new-weight]))
-              (aset parts i [small-weight smallest largest]))
-            (aset parts i [small-weight smallest smallest]))))
-      (fn weighted-sample [^Random rng]
-        (let [i (.nextInt rng len)
-              [split small large] (aget parts i)]
-          (if (< (.nextDouble rng) (double split)) small large))))))
 
 (defn batch-transact!
   "Submit tx-data in batches of batch-size. Uses submit-tx (fire-and-forget).
@@ -170,9 +116,11 @@
                    categories)
         tx-key (batch-transact! conn docs 512)]
     (reset! (:category-ids state) (mapv :category/id docs))
-    (reset! (:categories state)
-            (mapv (fn [cat doc] (assoc cat :id (:category/id doc)))
-                  categories docs))
+    (let [categories (mapv (fn [cat doc] (assoc cat :id (:category/id doc)))
+                           categories docs)]
+      (reset! (:categories state) categories)
+      (reset! (:category-sampler state)
+              (random/weighted-sample-fn (mapv (juxt identity :weight) categories))))
     tx-key))
 
 (defn generate-gags!
@@ -182,7 +130,7 @@
         docs (mapv (fn [_]
                      (let [id (next-id (:gag-counter state))]
                        {:gag/id id
-                        :gag/category-id [:category/id (rand-nth-vec rng cat-ids)]
+                        :gag/category-id [:category/id (random/uniform-nth rng cat-ids)]
                         :gag/name (str "GAG-" id)}))
                    (range n))
         tx-key (batch-transact! conn docs 512)]
@@ -196,7 +144,7 @@
         docs (mapv (fn [_]
                      (let [id (next-id (:gav-counter state))]
                        {:gav/id id
-                        :gav/gag-id [:gag/id (rand-nth-vec rng gag-ids)]
+                        :gav/gag-id [:gag/id (random/uniform-nth rng gag-ids)]
                         :gav/name (str "GAV-" id)}))
                    (range n))
         tx-key (batch-transact! conn docs 512)]
@@ -211,18 +159,18 @@
         docs (mapv (fn [_]
                      (let [id (next-id (:user-counter state))]
                        {:user/id id
-                        :user/region-id [:region/id (rand-nth-vec rng region-ids)]
+                        :user/region-id [:region/id (random/uniform-nth rng region-ids)]
                         :user/rating 0
                         :user/balance 0.0
                         :user/created (millis->instant (- now-ms (.nextInt rng 86400000)))
-                        :user/sattr0 (rand-string rng 16)
-                        :user/sattr1 (rand-string rng 16)
-                        :user/sattr2 (rand-string rng 16)
-                        :user/sattr3 (rand-string rng 16)
-                        :user/sattr4 (rand-string rng 16)
-                        :user/sattr5 (rand-string rng 16)
-                        :user/sattr6 (rand-string rng 16)
-                        :user/sattr7 (rand-string rng 16)}))
+                        :user/sattr0 (random/next-string rng 16)
+                        :user/sattr1 (random/next-string rng 16)
+                        :user/sattr2 (random/next-string rng 16)
+                        :user/sattr3 (random/next-string rng 16)
+                        :user/sattr4 (random/next-string rng 16)
+                        :user/sattr5 (random/next-string rng 16)
+                        :user/sattr6 (random/next-string rng 16)
+                        :user/sattr7 (random/next-string rng 16)}))
                    (range n))
         tx-key (batch-transact! conn docs 512)]
     (reset! (:users state) (mapv :user/id docs))
@@ -234,11 +182,11 @@
   (let [user-ids @(:users state)
         docs (mapv (fn [_]
                      (let [id (next-id (:ua-counter state))
-                           uid (rand-nth-vec rng user-ids)]
+                           uid (random/uniform-nth rng user-ids)]
                        {:user-attribute/id id
                         :user-attribute/user-id [:user/id uid]
                         :user-attribute/name (str "attr-" (.nextInt rng 100))
-                        :user-attribute/value (rand-string rng 32)
+                        :user-attribute/value (random/next-string rng 32)
                         :user-attribute/created (now-instant)}))
                    (range n))]
     (batch-transact! conn docs 512)))
@@ -256,9 +204,7 @@
   "Generate item entities with images."
   [conn state ^Random rng n]
   (let [user-ids @(:users state)
-        categories @(:categories state)
-        cat-weights (mapv :weight categories)
-        cat-idx-fn (weighted-sample-fn cat-weights)
+        sample-category @(:category-sampler state)
         now-ms (instant->millis (now-instant))
         day-ms (* 24 60 60 1000)]
     (reduce
@@ -269,9 +215,8 @@
               (fn [acc _]
                 (let [item-id (next-id (:item-counter state))
                       item-tempid (str "item-" item-id)
-                      seller-id (nth user-ids (rand-gaussian rng (count user-ids)))
-                      cat-idx (cat-idx-fn rng)
-                      cat-id (:id (nth categories cat-idx))
+                      seller-id (nth user-ids (random/rand-gaussian rng (count user-ids)))
+                      cat-id (:id (sample-category rng))
                       status (sample-status rng)
                       num-images (inc (.nextInt rng 5))
                       initial-price (+ 1.0 (* (.nextDouble rng) 100.0))
@@ -323,7 +268,7 @@
                           (let [n-watches (.nextInt rng 6)]
                             (repeatedly n-watches
                                         (fn []
-                                          (let [item (rand-nth-vec rng open-items)]
+                                          (let [item (random/uniform-nth rng open-items)]
                                             {:user-watch/id (next-id (:watch-counter state))
                                              :user-watch/user-id [:user/id uid]
                                              :user-watch/item-id [:item/id (:item-id item)]
@@ -381,18 +326,18 @@
 
 (defn pick-random-open [^Random rng state]
   (let [v (queue->vec (:items-open state))]
-    (when (seq v) (rand-nth-vec rng v))))
+    (when (seq v) (random/uniform-nth rng v))))
 
 (defn pick-random-waiting [^Random rng state]
   (let [v (queue->vec (:items-waiting state))]
-    (when (seq v) (rand-nth-vec rng v))))
+    (when (seq v) (random/uniform-nth rng v))))
 
 (defn pick-random-closed [^Random rng state]
   (let [v (queue->vec (:items-closed state))]
-    (when (seq v) (rand-nth-vec rng v))))
+    (when (seq v) (random/uniform-nth rng v))))
 
 (defn pick-random-user [^Random rng state]
-  (rand-nth-vec rng @(:users state)))
+  (random/uniform-nth rng @(:users state)))
 
 (defn pick-random-item
   "Pick from any status queue."
@@ -480,12 +425,7 @@
   "List a new auction item with images."
   [conn ^Random rng state]
   (let [seller-id (pick-random-user rng state)
-        categories @(:categories state)
-        cat-weights (mapv :weight categories)
-        ;; TODO this should be moved out
-        cat-idx-fn (weighted-sample-fn cat-weights)
-        cat-idx (cat-idx-fn rng)
-        cat-id (:id (nth categories cat-idx))
+        cat-id (:id (@(:category-sampler state) rng))
         item-id (next-id (:item-counter state))
         item-tempid (str "item-" item-id)
         num-images (+ 1 (.nextInt rng 5))
@@ -555,18 +495,18 @@
         region-ids @(:regions state)]
     (tc/transact conn
                  [{:user/id uid
-                   :user/region-id [:region/id (rand-nth-vec rng region-ids)]
+                   :user/region-id [:region/id (random/uniform-nth rng region-ids)]
                    :user/rating 0
                    :user/balance 0.0
                    :user/created (now-instant)
-                   :user/sattr0 (rand-string rng 16)
-                   :user/sattr1 (rand-string rng 16)
-                   :user/sattr2 (rand-string rng 16)
-                   :user/sattr3 (rand-string rng 16)
-                   :user/sattr4 (rand-string rng 16)
-                   :user/sattr5 (rand-string rng 16)
-                   :user/sattr6 (rand-string rng 16)
-                   :user/sattr7 (rand-string rng 16)}])
+                   :user/sattr0 (random/next-string rng 16)
+                   :user/sattr1 (random/next-string rng 16)
+                   :user/sattr2 (random/next-string rng 16)
+                   :user/sattr3 (random/next-string rng 16)
+                   :user/sattr4 (random/next-string rng 16)
+                   :user/sattr5 (random/next-string rng 16)
+                   :user/sattr6 (random/next-string rng 16)
+                   :user/sattr7 (random/next-string rng 16)}])
     (swap! (:users state) conj uid)))
 
 ;; ---------------------------------------------------------------------------
