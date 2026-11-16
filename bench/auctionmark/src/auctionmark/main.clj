@@ -1,13 +1,12 @@
 (ns auctionmark.main
-  "AuctionMark benchmark entry point, workload driver, and reporting."
-  (:require [clojure.tools.cli :as cli]
+  "AuctionMark benchmark entry point, as a benchy benchmark."
+  (:require [benchy.core :as bench]
+            [clojure.pprint :as pp]
+            [clojure.tools.cli :as cli]
             [clojure.tools.logging :as log]
             [xyz.triplox.api :as tc]
             [auctionmark.procedures :as proc])
-  (:import [java.io Closeable]
-           [java.util Random]
-           [java.util.concurrent Executors TimeUnit]
-           [java.util.concurrent.atomic AtomicBoolean]))
+  (:import [java.time Duration]))
 
 ;; TODO move to deps.edn
 (set! *print-namespace-maps* false)
@@ -32,6 +31,10 @@
    ["-d" "--duration SECONDS" "Benchmark duration in seconds"
     :default (Long/parseLong (or (System/getenv "DURATION") "120"))
     :parse-fn #(Long/parseLong %)]
+   [nil "--seed N" "Random seed for loading and the workload"
+    :default 42
+    :parse-fn #(Long/parseLong %)]
+   [nil "--report PATH" "Append benchy events and the summary as JSON Lines to PATH"]
    ["-h" "--help" "Show this help message"]])
 
 (defn parse-config
@@ -51,103 +54,90 @@
       :else options)))
 
 ;; ---------------------------------------------------------------------------
-;; Weighted procedure selection
+;; Benchmark
 ;; ---------------------------------------------------------------------------
 
 (def procedure-table
-  ;; [name fn weight]
-  [[:get-item           proc/proc-get-item           40]
-   [:new-bid            proc/proc-new-bid            18]
-   [:new-item           proc/proc-new-item           10]
-   [:get-user-info      proc/proc-get-user-info      10]
-   [:new-user           proc/proc-new-user            5]
-   [:get-watched-items  proc/proc-get-watched-items   5]
-   [:new-feedback       proc/proc-new-feedback        3]
-   [:new-purchase       proc/proc-new-purchase        2]
-   [:new-comment        proc/proc-new-comment         2]
-   [:update-item        proc/proc-update-item         2]
-   [:get-comment        proc/proc-get-comment         2]
-   [:new-comment-response proc/proc-new-comment-response 1]])
+  ;; [weight name fn]
+  [[40 :get-item             proc/proc-get-item]
+   [18 :new-bid              proc/proc-new-bid]
+   [10 :new-item             proc/proc-new-item]
+   [10 :get-user-info        proc/proc-get-user-info]
+   [5  :new-user             proc/proc-new-user]
+   [5  :get-watched-items    proc/proc-get-watched-items]
+   [3  :new-feedback         proc/proc-new-feedback]
+   [2  :new-purchase         proc/proc-new-purchase]
+   [2  :new-comment          proc/proc-new-comment]
+   [2  :update-item          proc/proc-update-item]
+   [2  :get-comment          proc/proc-get-comment]
+   [1  :new-comment-response proc/proc-new-comment-response]])
 
-(def total-weight (reduce + 0 (map #(nth % 2) procedure-table)))
+(defn- procedure-task [transaction f]
+  {:t :call
+   :transaction transaction
+   :f (fn [{:keys [context random state]}] (f (:conn context) random state))})
 
-(defn pick-procedure
-  "Weighted random selection of a procedure."
-  [^Random rng]
-  (let [r (.nextInt rng (int total-weight))]
-    (loop [remaining r
-           [[name f w] & more] procedure-table]
-      (if (or (nil? more) (< remaining (int w)))
-        [name f]
-        (recur (- remaining (int w)) more)))))
+(defn- load-task [[step f]]
+  {:t :call
+   :stage step
+   :setup? true
+   :f (fn [{:keys [context random state]}] (f (:conn context) state random))})
 
-;; ---------------------------------------------------------------------------
-;; Driver
-;; ---------------------------------------------------------------------------
+(def ^:private join-wait (Duration/ofSeconds 30))
 
-(defn run-worker
-  "Run one worker thread."
-  [conn ^Random rng state ^AtomicBoolean running?]
-  (while (.get running?)
-    (let [[proc-name proc-fn] (pick-procedure rng)]
-      (try
-        (proc-fn conn rng state)
-        (catch Exception e
-          (log/warn e "Error in" proc-name))))))
-
-(defn run-benchmark
-  "Run the OLTP phase with concurrent workers + background thread."
-  [{:keys [host port threads duration] :as config} state]
-  (let [pool (Executors/newFixedThreadPool (+ threads 1))
-        running? (AtomicBoolean. true)
-        ;; one connection per thread
-        conns (mapv (fn [_] (tc/connect host port)) (range (+ threads 1)))
-        start-time (System/nanoTime)]
-
-    ;; start worker threads
-    (doseq [i (range threads)]
-      (.submit pool
-               ^Runnable (fn []
-                           (let [conn (nth conns i)
-                                 rng (Random. (+ 1000 i))]
-                             (run-worker conn rng state running?)))))
-
-    ;; start background thread for check-winning-bid + post-auction
-    (.submit pool
-             ^Runnable (fn []
-                         (let [conn (last conns)
-                               rng (Random. 9999)]
-                           (while (.get running?)
-                             (try
-                               (Thread/sleep 10000)
-                               (proc/proc-check-winning-bid conn rng state)
-                               (proc/proc-post-auction conn rng state)
-                               (catch InterruptedException _)
-                               (catch Exception e
-                                 (log/warn e "Background error")))))))
-
-    ;; wait for duration
-    (log/info "Running benchmark for" duration "seconds...")
-    (Thread/sleep ^int (* duration 1000))
-    (.set running? false)
-    (.shutdown pool)
-    (.awaitTermination pool 30 TimeUnit/SECONDS)
-
-    (let [elapsed-ns (- (System/nanoTime) start-time)
-          elapsed-secs (/ elapsed-ns 1e9)]
-
-      ;; close connections
-      (doseq [^Closeable c conns] (.close c))
-
-      {:elapsed-secs elapsed-secs})))
+(defn benchmark
+  "The benchy benchmark map. Runs need a context with a :conn."
+  [{:keys [threads duration seed report] :as config}]
+  (let [duration (Duration/ofSeconds duration)]
+    {:title "AuctionMark"
+     :seed seed
+     :parameters (select-keys config [:scale-factor :threads :duration])
+     :bench-log-file report
+     :->state proc/make-state
+     :tasks [{:t :do
+              :stage :load
+              :setup? true
+              :tasks (mapv load-task (proc/load-steps config))}
+             {:t :call :f (fn [{:keys [state]}] (proc/log-item-counts state))}
+             {:t :concurrently
+              :stage :oltp
+              :duration duration
+              :join-wait join-wait
+              :thread-tasks [{:t :pool
+                              :thread-count threads
+                              :duration duration
+                              :join-wait join-wait
+                              :pooled-task {:t :pick-weighted
+                                            :choices (vec (for [[weight transaction f] procedure-table]
+                                                            [weight (procedure-task transaction f)]))}}
+                             {:t :freq-job
+                              :duration duration
+                              :freq (Duration/ofSeconds 10)
+                              :job-task {:t :do
+                                         :tasks [(procedure-task :check-winning-bid proc/proc-check-winning-bid)
+                                                 (procedure-task :post-auction proc/proc-post-auction)]}}]}]}))
 
 ;; ---------------------------------------------------------------------------
 ;; Reporting
 ;; ---------------------------------------------------------------------------
 
-(defn print-report [results]
+(defn- format-number [v]
+  (if (double? v) (format "%.3f" v) v))
+
+(defn print-report [result]
   (log/info "=== AuctionMark Results ===")
-  (log/info (format "Duration: %.1f seconds" (:elapsed-secs results))))
+  (log/info (format "Status: %s, measured %.1f s, setup %.1f s, %d transactions, %d errors, %.1f tx/s"
+                    (name (:status result))
+                    (/ (:time-taken-ms result) 1000)
+                    (/ (:setup-time-ms result) 1000)
+                    (:transaction-count result)
+                    (:error-count result)
+                    (double (:throughput result))))
+  (pp/print-table [:transaction :count :error-count :mean-ms :p50-ms :p95-ms :p99-ms :max-ms]
+                  (for [tx (:transactions result)]
+                    (update-vals tx format-number)))
+  (doseq [{:keys [transaction class message]} (:errors result)]
+    (log/warn "Error in" transaction class message)))
 
 ;; ---------------------------------------------------------------------------
 ;; Entry point
@@ -161,16 +151,8 @@
     (log/info (format "Threads: %d" (:threads config)))
     (log/info (format "Duration: %d seconds" (:duration config)))
 
-    ;; Phase 1: Load data
-    (log/info "--- Loading Phase ---")
-    (let [load-conn (tc/connect (:host config) (:port config))
-          state (proc/load-data! load-conn config)]
-      (.close load-conn)
-
-      ;; Phase 2: OLTP benchmark
-      (log/info "--- OLTP Phase ---")
-      (let [results (run-benchmark config state)]
-        (print-report results)))
+    (with-open [conn (tc/connect (:host config) (:port config))]
+      (print-report (bench/run-benchmark (benchmark config) {:conn conn})))
 
     (log/info "Done.")
     (System/exit 0)))
@@ -186,7 +168,11 @@
   (require '[auctionmark.schema :as schema])
 
   (time
-   (proc/load-data! conn {:scale-factor 0.01}))
+   (def state (proc/load-data! conn {:scale-factor 0.01})))
+
+  (-> (benchmark {:scale-factor 0.001 :threads 2 :duration 10 :seed 42})
+      (bench/run-benchmark {:conn conn})
+      print-report)
 
   (tc/transact conn [{:db/ident :name
                       :db/valueType :db.type/string

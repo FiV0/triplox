@@ -335,52 +335,41 @@
 ;; Loading orchestration
 ;; ---------------------------------------------------------------------------
 
+(defn load-steps
+  "Named loading steps in order, each a fn of [conn state rng]."
+  [{:keys [scale-factor]}]
+  (let [num-users (long (* scale-factor 1000000))
+        num-user-attrs (long (* scale-factor 1300000))
+        num-items (long (* scale-factor 10000000))]
+    [[:schema (fn [conn _ _] (tc/transact conn schema/schema-tx))]
+     [:categories (fn [conn state _] (generate-categories! conn state (load-categories-tsv)))]
+     [:regions (fn [conn state rng] (generate-regions! conn state rng 75))]
+     [:gags (fn [conn state rng] (generate-gags! conn state rng 100))]
+     [:gavs (fn [conn state rng] (generate-gavs! conn state rng 1000))]
+     [:users (fn [conn state rng] (generate-users! conn state rng num-users))]
+     [:user-attributes (fn [conn state rng] (generate-user-attributes! conn state rng num-user-attrs))]
+     [:items (fn [conn state rng] (generate-items! conn state rng num-items))]
+     [:user-watches generate-user-watches!]
+     ;; generators use submit-tx; a synchronous write waits until all of them are indexed
+     [:await-indexing (fn [conn _ _]
+                        (tc/transact conn [[:db/add [:region/id 0] :region/name
+                                            (str "Region-0-fence-" (System/currentTimeMillis))]]))]]))
+
+(defn log-item-counts [state]
+  (log/info "Load complete. Items: open="
+            (.size ^ConcurrentLinkedQueue (:items-open state))
+            "waiting=" (.size ^ConcurrentLinkedQueue (:items-waiting state))
+            "closed=" (.size ^ConcurrentLinkedQueue (:items-closed state))))
+
 (defn load-data!
   "Load all AuctionMark data. Returns state."
-  [conn {:keys [scale-factor] :as _config}]
+  [conn config]
   (let [state (make-state)
-        rng (Random. 42)
-        num-users (long (* scale-factor 1000000))
-        num-user-attrs (long (* scale-factor 1300000))
-        num-items (long (* scale-factor 10000000))
-        categories-data (load-categories-tsv)]
-
-    (log/info "Installing schema...")
-    (tc/transact conn schema/schema-tx)
-
-    (log/info "Generating" (count categories-data) "categories...")
-    (generate-categories! conn state categories-data)
-
-    (log/info "Generating 75 regions...")
-    (generate-regions! conn state rng 75)
-
-    (log/info "Generating 100 global attribute groups...")
-    (generate-gags! conn state rng 100)
-
-    (log/info "Generating 1000 global attribute values...")
-    (generate-gavs! conn state rng 1000)
-
-    (log/info "Generating" num-users "users...")
-    (generate-users! conn state rng num-users)
-
-    (log/info "Generating" num-user-attrs "user attributes...")
-    (generate-user-attributes! conn state rng num-user-attrs)
-
-    (log/info "Generating" num-items "items + images...")
-    (generate-items! conn state rng num-items)
-
-    (log/info "Generating user watches...")
-    (generate-user-watches! conn state rng)
-
-    ;; fence: wait for all submit-tx to be indexed
-    (log/info "Waiting for indexing to complete...")
-    (tc/transact conn [[:db/add [:region/id 0] :region/name
-                        (str "Region-0-fence-" (System/currentTimeMillis))]])
-
-    (log/info "Load complete. Items: open="
-              (.size ^ConcurrentLinkedQueue (:items-open state))
-              "waiting=" (.size ^ConcurrentLinkedQueue (:items-waiting state))
-              "closed=" (.size ^ConcurrentLinkedQueue (:items-closed state)))
+        rng (Random. 42)]
+    (doseq [[step f] (load-steps config)]
+      (log/info "Loading" (name step) "...")
+      (f conn state rng))
+    (log-item-counts state)
     state))
 
 ;; ---------------------------------------------------------------------------
