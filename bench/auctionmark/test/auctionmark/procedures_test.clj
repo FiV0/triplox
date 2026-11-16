@@ -285,3 +285,15 @@
     (is (= #{:b :c} (set [(proc/pool-take! pool) (proc/pool-take! pool)])))
     (is (= 0 (proc/pool-size pool)))
     (is (nil? (proc/pool-take! pool)))))
+
+(deftest pick-random-open-skips-ended-auctions-test
+  (let [state (proc/make-state)
+        rng (Random. 42)
+        now-ms (.toEpochMilli (proc/now-instant))
+        running (proc/->ItemSample 0 0 (+ now-ms 60000))
+        ended (proc/->ItemSample 1 0 (- now-ms 60000))]
+    (proc/pool-add! (:items-open state) ended)
+    (is (nil? (proc/pick-random-open rng state)) "only an ended auction is in the pool")
+
+    (proc/pool-add! (:items-open state) running)
+    (is (= #{running} (disj (set (repeatedly 20 #(proc/pick-random-open rng state))) nil)))))

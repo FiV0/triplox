@@ -14,7 +14,7 @@
 ;; State
 ;; ---------------------------------------------------------------------------
 
-(defrecord ItemSample [item-id seller-id])
+(defrecord ItemSample [item-id seller-id ^long end-ms])
 
 ;; A pool is a set of items with O(1) add, remove and random pick.
 ;; :index maps each item to its position in :items.
@@ -258,8 +258,12 @@
                       status (sample-status rng)
                       num-images (inc (.nextInt rng 5))
                       initial-price (+ 1.0 (* (.nextDouble rng) 100.0))
-                      duration-days (+ 1 (.nextInt rng 43))
-                      start-ms (- now-ms (* (.nextInt rng 30) day-ms))
+                      age-days (inc (.nextInt rng 29))
+                      ;; an open auction ends in the future, all others ended already
+                      duration-days (if (= status :open)
+                                      (+ age-days 1 (.nextInt rng 14))
+                                      (inc (.nextInt rng age-days)))
+                      start-ms (- now-ms (* age-days day-ms))
                       end-ms (+ start-ms (* duration-days day-ms))
                       item-doc {:db/id item-tempid
                                 :item/id item-id
@@ -281,7 +285,7 @@
                                             :item-image/user-id [:user/id seller-id]
                                             :item-image/path (str "/img/" item-id "/" i ".jpg")}))
                                        (range num-images))
-                      sample (->ItemSample item-id seller-id)]
+                      sample (->ItemSample item-id seller-id end-ms)]
                   ;; track in status pools
                   (case status
                     :open (pool-add! (:items-open state) sample)
@@ -359,8 +363,19 @@
 ;; Helper: pick random items from pools
 ;; ---------------------------------------------------------------------------
 
-(defn pick-random-open [^Random rng state]
-  (pool-pick (:items-open state) rng))
+(def ^:private open-pick-attempts 10)
+
+(defn pick-random-open
+  "Pick an open item whose auction did not end yet. Returns nil after a few misses."
+  [^Random rng state]
+  (let [now-ms (instant->millis (now-instant))]
+    (loop [n open-pick-attempts]
+      (when (pos? n)
+        (let [item (pool-pick (:items-open state) rng)]
+          (cond
+            (nil? item) nil
+            (< now-ms (:end-ms item)) item
+            :else (recur (dec n))))))))
 
 (defn pick-random-waiting [^Random rng state]
   (pool-pick (:items-waiting state) rng))
@@ -496,7 +511,7 @@
       (tc/transact conn
                    [{:db/id [:user/id seller-id]
                      :user/balance (- (double balance) 1.0)}]))
-    (pool-add! (:items-open state) (->ItemSample item-id seller-id))))
+    (pool-add! (:items-open state) (->ItemSample item-id seller-id end-ms))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 4: get-user-info (10%)
@@ -690,7 +705,7 @@
   (let [now-ms (instant->millis (now-instant))
         expired
         (tc/q (tc/db conn)
-              '{:find [?item-id ?seller-id]
+              '{:find [?item-id ?seller-id ?end]
                 :in [?now]
                 :where [[?e :item/status :open]
                         [?e :item/end-date ?end]
@@ -701,14 +716,14 @@
                 :limit 100}
               (millis->instant now-ms))]
     (when (seq expired)
-      (let [tx-data (mapv (fn [[item-id _]]
+      (let [tx-data (mapv (fn [[item-id]]
                             {:db/id [:item/id item-id]
                              :item/status :waiting-for-purchase})
                           expired)]
         (tc/transact conn tx-data)
         ;; move items from open to waiting
-        (doseq [[item-id seller-id] expired]
-          (let [sample (->ItemSample item-id seller-id)]
+        (doseq [[item-id seller-id end] expired]
+          (let [sample (->ItemSample item-id seller-id (instant->millis end))]
             (pool-remove! (:items-open state) sample)
             (pool-add! (:items-waiting state) sample)))))))
 
