@@ -5,7 +5,7 @@
             [clojure.walk :as walk]
             [xyz.triplox.api :as tc])
   (:import [java.util Random]
-           [java.util.concurrent ConcurrentLinkedQueue]
+           [java.util.concurrent TimeUnit]
            [java.util.concurrent.atomic AtomicLong]))
 
 ;; ---------------------------------------------------------------------------
@@ -97,7 +97,7 @@
 ;; Reference model: {identity-attr {id doc}}
 
 (def identity-attributes
-  [:item/id :user-watch/id :item-bid/id :item-comment/id :item-image/id :item-max-bid/id :user/id])
+  [:item/id :user-watch/id :item-bid/id :item-comment/id :item-image/id :user/id])
 
 (defn- tracked-entity
   "The [identity-attr id] a put targets, or nil when the model doesn't track that entity."
@@ -180,22 +180,25 @@
   (update-vals state (fn [v]
                        (cond
                          (instance? AtomicLong v) (AtomicLong. (.get ^AtomicLong v))
-                         (instance? ConcurrentLinkedQueue v) (ConcurrentLinkedQueue. ^java.util.Collection v)
                          (instance? clojure.lang.Atom v) (atom @v)
                          :else v))))
 
+(def ^:private open-auction-ms (.toMillis TimeUnit/DAYS 30))
+
 (defn- open-all-items!
-  "Give every item a round-robin seller and open it, mirroring that in the procedure queues."
+  "Give every item a round-robin seller and a future end date and open it, mirroring that in the procedure pools."
   [conn state users items]
-  (transact! conn (mapv (fn [id]
-                          {:db/id [:item/id id]
-                           :item/user-id [:user/id (mod id users)]
-                           :item/status :open})
-                        (range items)))
-  (doseq [k [:items-open :items-waiting :items-closed]]
-    (.clear ^ConcurrentLinkedQueue (get state k)))
-  (doseq [id (range items)]
-    (.add ^ConcurrentLinkedQueue (:items-open state) (proc/->ItemSample id (mod id users)))))
+  (let [end-ms (+ (proc/instant->millis (proc/now-instant)) open-auction-ms)]
+    (transact! conn (mapv (fn [id]
+                            {:db/id [:item/id id]
+                             :item/user-id [:user/id (mod id users)]
+                             :item/end-date (proc/millis->instant end-ms)
+                             :item/status :open})
+                          (range items)))
+    (doseq [k [:items-open :items-waiting :items-closed]]
+      (reset! (get state k) @(proc/make-pool)))
+    (doseq [id (range items)]
+      (proc/pool-add! (:items-open state) (proc/->ItemSample id (mod id users) end-ms)))))
 
 (defn- read-item-docs [conn]
   (->> (tc/q (tc/db conn)
@@ -280,11 +283,15 @@
                       id (keys (get current attr))
                       :when (not (contains? (get baseline attr) id))]
                   [:db/retractEntity [attr id]])
+        ;; the fixture has no max-bid records, and the model does not track them
+        max-bids (for [[e] (tc/q (tc/db conn) '{:find [?m]
+                                                 :where [[?m :item-max-bid/item-id ?i]]})]
+                   [:db/retractEntity e])
         puts (for [attr identity-attributes
                    [id doc] (get baseline attr)]
                (cond-> (assoc doc attr id)
                  (contains? (get current attr) id) (assoc :db/id [attr id])))]
-    (doseq [batch (partition-all 128 (concat deletes puts))]
+    (doseq [batch (partition-all 128 (concat deletes max-bids puts))]
       (transact! conn (vec batch)))))
 
 ;; ---------------------------------------------------------------------------
@@ -304,17 +311,14 @@
                                      :user-watch/created (proc/now-instant)}])))))
 
 (defn- advance-auction!
-  "Move the oldest open item to waiting-for-purchase, or the oldest waiting item to closed."
+  "Move an open item to waiting-for-purchase, or a waiting item to closed."
   [conn ^Random rng state]
-  (let [waiting ^ConcurrentLinkedQueue (:items-waiting state)
-        [from to status] (if (and (seq waiting) (.nextBoolean rng))
+  (let [[from to status] (if (and (pos? (proc/pool-size (:items-waiting state))) (.nextBoolean rng))
                            [:items-waiting :items-closed :closed]
-                           [:items-open :items-waiting :waiting-for-purchase])
-        from-queue ^ConcurrentLinkedQueue (get state from)]
-    (when-let [item (.peek from-queue)]
+                           [:items-open :items-waiting :waiting-for-purchase])]
+    (when-let [item (proc/pool-take! (get state from))]
       (proc/transact! conn state [{:db/id [:item/id (:item-id item)] :item/status status}])
-      (.remove from-queue item)
-      (.add ^ConcurrentLinkedQueue (get state to) item))))
+      (proc/pool-add! (get state to) item))))
 
 (defn mutate!
   "The original write procedures plus watch membership and explicit auction transitions."

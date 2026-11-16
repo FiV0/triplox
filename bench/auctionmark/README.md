@@ -9,6 +9,8 @@ A run has two stages:
 
 All workers share one connection, because `TriploxNode` is thread-safe.
 
+[LIVE.md](LIVE.md) describes a separate live-query workload for incremental queries (`clojure -M:sync`).
+
 ## Procedures
 
 | Procedure | Weight |
