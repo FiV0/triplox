@@ -249,9 +249,8 @@ for each aggregate expression. Then it joins those streams by group. It puts the
 group values and the aggregate values back in find-clause order. The circuit
 does not deduplicate equivalent aggregate expressions.
 
-A global aggregate has an empty group key. The circuit seeds that group, so an
-empty input produces `0` for `count`, `count-distinct`, and `sum`. For an empty
-input, `avg`, `min`, and `max` produce no row.
+A global aggregate has an empty group key. The circuit does not
+seed that group, so an empty input produces no row for any aggregate.
 
 `min` and `max` use a complex method to produce a result. There are two reasons.
 First, the implementation duplicates the handling of values with types that

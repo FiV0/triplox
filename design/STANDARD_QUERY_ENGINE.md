@@ -413,9 +413,9 @@ variable order. `execute_query` then:
 5. resolves and applies fixed or input-bound `:limit`;
 6. returns `QueryResult`, currently `Vec<Vec<DataType>>`.
 
-An all-aggregate query seeds one empty group, so aggregates such as `count`
-still produce a result on empty input. A grouped aggregate produces no rows
-when no group exists.
+An aggregate query produces no rows on empty input. This holds
+for all-aggregate queries as well as grouped ones, so `count` does not return
+`0`.
 
 ---
 

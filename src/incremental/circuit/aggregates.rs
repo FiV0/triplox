@@ -3,10 +3,9 @@ use std::ops::{Add, AddAssign};
 use anyhow::Result;
 use dbsp::{
     algebra::{HasZero, MulByRef, F64},
-    operator::{ConstantGenerator, Max, Min},
+    operator::{Max, Min},
     typed_batch::OrdIndexedZSet,
-    utils::Tup2,
-    Circuit, OrdZSet, RootCircuit, Stream, ZWeight,
+    RootCircuit, Stream, ZWeight,
 };
 
 use crate::codec::{Decode, Encode};
@@ -87,15 +86,6 @@ pub(super) fn decode_aggregate_output(value: &AggregateOutput) -> Result<DataTyp
     match value {
         AggregateOutput::Value(value) => DataType::decode(value).map_err(anyhow::Error::from),
         AggregateOutput::Error(error) => Err(error.clone().into()),
-    }
-}
-
-fn empty_global_aggregate(func: &AggregateFunc) -> Option<AggregateOutput> {
-    match func {
-        AggregateFunc::Count | AggregateFunc::CountDistinct | AggregateFunc::Sum => {
-            Some(AggregateOutput::Value(DataType::Long(0).encode()))
-        }
-        AggregateFunc::Avg | AggregateFunc::Min | AggregateFunc::Max => None,
     }
 }
 
@@ -557,53 +547,31 @@ pub(super) fn aggregate_find_stream(
         .projections
         .iter()
         .filter_map(|projection| match projection {
-            Projection::Aggregate(func, input_position) => Some((
-                func.clone(),
-                aggregate_stream(&grouped, func, *input_position),
-            )),
+            Projection::Aggregate(func, input_position) => {
+                Some(aggregate_stream(&grouped, func, *input_position))
+            }
             Projection::GroupVar(_) => None,
         })
         .collect::<Vec<_>>();
 
-    let combined = if plan.group_key_indices.is_empty() {
-        // Seed the empty group so global aggregates produce a row for empty input.
-        let singleton = OrdZSet::from_keys((), vec![Tup2(Vec::<Vec<u8>>::new(), 1)]);
-        let mut combined = grouped
-            .circuit()
-            .add_source(ConstantGenerator::new(singleton))
-            // The differentiate assures there are no changes after the first tick.
-            .differentiate()
-            .map_index(|group| (group.clone(), Vec::<AggregateOutput>::new()));
-        for (func, aggregate) in aggregate_streams {
-            let aggregate =
-                aggregate.map_index(|(group, value)| (group.clone(), Some(value.clone())));
-            // This needs to be a left_join because an empty global result has no group key. With left_join the left group is preserved.
-            combined = combined.left_join_index(&aggregate, move |group, values, value| {
+    // Join per-group aggregate streams into one vector of results. A global
+    // aggregate has an empty group key, so empty input produces no row.
+    let mut streams = aggregate_streams.into_iter();
+    let first = streams
+        .next()
+        .expect("aggregate find plan must contain an aggregate");
+    // Results remain indexed, because the group-key becomes important below.
+    let combined = streams.fold(
+        first.map_index(|(group, value)| (group.clone(), vec![value.clone()])),
+        |combined, aggregate| {
+            // This always triggers a join as the group keys *must* exist on both sides.
+            combined.join_index(&aggregate, |group, values, value| {
                 let mut output = values.clone();
-                output.push(value.clone().or_else(|| empty_global_aggregate(&func))?);
+                output.push(value.clone());
                 Some((group.clone(), output))
-            });
-        }
-        combined
-    } else {
-        // Join per-group aggregate streams into one vector of results.
-        let mut streams = aggregate_streams.into_iter().map(|(_, stream)| stream);
-        let first = streams
-            .next()
-            .expect("aggregate find plan must contain an aggregate");
-        // Results remain indexed, because the group-key becomes important below.
-        streams.fold(
-            first.map_index(|(group, value)| (group.clone(), vec![value.clone()])),
-            |combined, aggregate| {
-                // This always triggers a join as the group keys *must* exist on both sides.
-                combined.join_index(&aggregate, |group, values, value| {
-                    let mut output = values.clone();
-                    output.push(value.clone());
-                    Some((group.clone(), output))
-                })
-            },
-        )
-    };
+            })
+        },
+    );
 
     // Restore group variables and aggregate results to find-clause order.
     let projections = plan.projections.clone();

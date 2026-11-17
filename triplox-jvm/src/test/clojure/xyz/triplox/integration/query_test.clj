@@ -906,8 +906,8 @@
                                          [?e :age ?value])]}) )))
 
 (deftest test-aggregate-empty-result
-  (is (= #{[0]} (q '{:find [(count ?e)]
-                     :where [[?e :name "nobody"]]}))))
+  (is (= #{} (q '{:find [(count ?e)]
+                  :where [[?e :name "nobody"]]}))))
 
 (deftest test-expressions-in-aggregates
   (is (thrown-with-msg? TriploxException #"Nested expressions are not supported as arguments to aggregate 'sum'"

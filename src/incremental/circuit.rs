@@ -849,7 +849,7 @@ mod tests {
     }
 
     #[test]
-    fn query_circuit_primes_empty_count_and_applies_updates() {
+    fn query_circuit_count_starts_empty_and_applies_updates() {
         let storage = tempfile::tempdir().unwrap();
         let plan = query_plan(
             "{:find [(count ?age)]
@@ -860,11 +860,8 @@ mod tests {
         let name = Tup2(triple(42, NAME, "Alice".into()), 1);
         let age = Tup2(triple(42, AGE, 30_i64.into()), 1);
 
-        assert_eq!(
-            step(&mut circuit, vec![]).unwrap(),
-            vec![(vec![DataType::Long(0)], 1)]
-        );
-        // An empty or unrelated transaction leaves the primed count unchanged.
+        assert_eq!(step(&mut circuit, vec![]).unwrap(), vec![]);
+        // An empty or unrelated transaction produces no count row.
         for triples in [vec![], vec![name.clone()]] {
             let batch = single_batch(tx_key, triples);
             assert_eq!(
@@ -873,12 +870,8 @@ mod tests {
             );
         }
         let batch = single_batch(tx_key, vec![name, age]);
-        let mut rows = futures::executor::block_on(circuit.apply(&batch)).unwrap();
-        rows.sort_by_key(|(_, weight)| *weight);
-        assert_eq!(
-            rows,
-            vec![(vec![DataType::Long(0)], -1), (vec![DataType::Long(1)], 1)]
-        );
+        let rows = futures::executor::block_on(circuit.apply(&batch)).unwrap();
+        assert_eq!(rows, vec![(vec![DataType::Long(1)], 1)]);
     }
 
     #[test]
@@ -1656,9 +1649,9 @@ mod tests {
     }
 
     #[test]
-    fn empty_global_zero_aggregates_produce_a_row() {
+    fn empty_global_aggregates_produce_no_row() {
         let plan = query_plan(
-            "[:find (count ?age) (count-distinct ?age) (sum ?age)
+            "[:find (count ?age) (count-distinct ?age) (sum ?age) (min ?age) (max ?age) (avg ?age)
               :where [?e :age ?age]]",
         );
         let (mut circuit, (_handle, output), _storage) =
@@ -1666,13 +1659,7 @@ mod tests {
 
         circuit.transaction().unwrap();
 
-        assert_eq!(
-            decode_output_rows(&output.consolidate()).unwrap(),
-            vec![(
-                vec![DataType::Long(0), DataType::Long(0), DataType::Long(0)],
-                1,
-            )]
-        );
+        assert_eq!(decode_output_rows(&output.consolidate()).unwrap(), vec![]);
     }
 
     #[test]
