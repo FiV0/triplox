@@ -6,14 +6,14 @@
   (:import [java.io PushbackReader]))
 
 (defn read-queries []
-  (with-open [r (PushbackReader. (io/reader (io/resource "job/upstream-queries.clj")))]
+  (with-open [r (PushbackReader. (io/reader (io/resource "job/job-queries.clj")))]
     (loop [queries (sorted-map)]
       (let [form (read {:eof nil} r)]
         (if-not form
           queries
           (let [[_ sym [_ query]] form]
             (when-not (= 'def (first form))
-              (throw (ex-info "Unexpected upstream query form" {:form form})))
+              (throw (ex-info "Unexpected JOB query form" {:form form})))
             (recur (assoc queries (subs (name sym) 2) query))))))))
 
 (def queries (read-queries))

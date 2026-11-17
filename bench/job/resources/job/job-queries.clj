@@ -1,3 +1,10 @@
+;; Join Order Benchmark (JOB) queries in Datalog, taken from Datalevin
+;; (https://github.com/juji-io/datalevin), commit
+;; fcab56d2fb7d7137011b125a78c0383b9dbb3816,
+;; benchmarks/JOB-bench/src/datalevin_bench/core.clj.
+;; Licensed under the Eclipse Public License 2.0; see bench/job/NOTICE.md and
+;; bench/job/EPL-2.0.txt.
+
 (def q-1a '[:find (min ?mc.note) (min ?t.title) (min ?t.production-year)
             :where
             [?ct :company-type/kind "production companies"]
