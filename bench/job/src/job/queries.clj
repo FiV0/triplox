@@ -2,21 +2,10 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [clojure.walk :as walk])
-  (:import [java.io PushbackReader]))
+            [clojure.walk :as walk]
+            [job.job-queries :as job-queries]))
 
-(defn read-queries []
-  (with-open [r (PushbackReader. (io/reader (io/resource "job/job-queries.clj")))]
-    (loop [queries (sorted-map)]
-      (let [form (read {:eof nil} r)]
-        (if-not form
-          queries
-          (let [[_ sym [_ query]] form]
-            (when-not (= 'def (first form))
-              (throw (ex-info "Unexpected JOB query form" {:form form})))
-            (recur (assoc queries (subs (name sym) 2) query))))))))
-
-(def queries (read-queries))
+(def queries job-queries/queries)
 (def expected (edn/read-string (slurp (io/resource "job/expected.edn"))))
 
 (defn query-order [id]
