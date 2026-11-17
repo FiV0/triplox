@@ -2655,116 +2655,36 @@
 
 (def queries
   (sorted-map
-   "1a" q-1a
-   "1b" q-1b
-   "1c" q-1c
-   "1d" q-1d
-   "2a" q-2a
-   "2b" q-2b
-   "2c" q-2c
-   "2d" q-2d
-   "3a" q-3a
-   "3b" q-3b
-   "3c" q-3c
-   "4a" q-4a
-   "4b" q-4b
-   "4c" q-4c
-   "5a" q-5a
-   "5b" q-5b
-   "5c" q-5c
-   "6a" q-6a
-   "6b" q-6b
-   "6c" q-6c
-   "6d" q-6d
-   "6e" q-6e
-   "6f" q-6f
-   "7a" q-7a
-   "7b" q-7b
-   "7c" q-7c
-   "8a" q-8a
-   "8b" q-8b
-   "8c" q-8c
-   "8d" q-8d
-   "9a" q-9a
-   "9b" q-9b
-   "9c" q-9c
-   "9d" q-9d
-   "10a" q-10a
-   "10b" q-10b
-   "10c" q-10c
-   "11a" q-11a
-   "11b" q-11b
-   "11c" q-11c
-   "11d" q-11d
-   "12a" q-12a
-   "12b" q-12b
-   "12c" q-12c
-   "13a" q-13a
-   "13b" q-13b
-   "13c" q-13c
-   "13d" q-13d
-   "14a" q-14a
-   "14b" q-14b
-   "14c" q-14c
-   "15a" q-15a
-   "15b" q-15b
-   "15c" q-15c
-   "15d" q-15d
-   "16a" q-16a
-   "16b" q-16b
-   "16c" q-16c
-   "16d" q-16d
-   "17a" q-17a
-   "17b" q-17b
-   "17c" q-17c
-   "17d" q-17d
-   "17e" q-17e
-   "17f" q-17f
-   "18a" q-18a
-   "18b" q-18b
-   "18c" q-18c
-   "19a" q-19a
-   "19b" q-19b
-   "19c" q-19c
-   "19d" q-19d
-   "20a" q-20a
-   "20b" q-20b
-   "20c" q-20c
-   "21a" q-21a
-   "21b" q-21b
-   "21c" q-21c
-   "22a" q-22a
-   "22b" q-22b
-   "22c" q-22c
-   "22d" q-22d
-   "23a" q-23a
-   "23b" q-23b
-   "23c" q-23c
-   "24a" q-24a
-   "24b" q-24b
-   "25a" q-25a
-   "25b" q-25b
-   "25c" q-25c
-   "26a" q-26a
-   "26b" q-26b
-   "26c" q-26c
-   "27a" q-27a
-   "27b" q-27b
-   "27c" q-27c
-   "28a" q-28a
-   "28b" q-28b
-   "28c" q-28c
-   "29a" q-29a
-   "29b" q-29b
-   "29c" q-29c
-   "30a" q-30a
-   "30b" q-30b
-   "30c" q-30c
-   "31a" q-31a
-   "31b" q-31b
-   "31c" q-31c
-   "32a" q-32a
-   "32b" q-32b
-   "33a" q-33a
-   "33b" q-33b
-   "33c" q-33c))
+   "1a" q-1a "1b" q-1b "1c" q-1c "1d" q-1d
+   "2a" q-2a "2b" q-2b "2c" q-2c "2d" q-2d
+   "3a" q-3a "3b" q-3b "3c" q-3c
+   "4a" q-4a "4b" q-4b "4c" q-4c
+   "5a" q-5a "5b" q-5b "5c" q-5c
+   "6a" q-6a "6b" q-6b "6c" q-6c "6d" q-6d "6e" q-6e "6f" q-6f
+   "7a" q-7a "7b" q-7b "7c" q-7c
+   "8a" q-8a "8b" q-8b "8c" q-8c "8d" q-8d
+   "9a" q-9a "9b" q-9b "9c" q-9c "9d" q-9d
+   "10a" q-10a "10b" q-10b "10c" q-10c
+   "11a" q-11a "11b" q-11b "11c" q-11c "11d" q-11d
+   "12a" q-12a "12b" q-12b "12c" q-12c
+   "13a" q-13a "13b" q-13b "13c" q-13c "13d" q-13d
+   "14a" q-14a "14b" q-14b "14c" q-14c
+   "15a" q-15a "15b" q-15b "15c" q-15c "15d" q-15d
+   "16a" q-16a "16b" q-16b "16c" q-16c "16d" q-16d
+   "17a" q-17a "17b" q-17b "17c" q-17c "17d" q-17d "17e" q-17e "17f" q-17f
+   "18a" q-18a "18b" q-18b "18c" q-18c
+   "19a" q-19a "19b" q-19b "19c" q-19c "19d" q-19d
+   "20a" q-20a "20b" q-20b "20c" q-20c
+   "21a" q-21a "21b" q-21b "21c" q-21c
+   "22a" q-22a "22b" q-22b "22c" q-22c "22d" q-22d
+   "23a" q-23a "23b" q-23b "23c" q-23c
+   "24a" q-24a "24b" q-24b
+   "25a" q-25a "25b" q-25b "25c" q-25c
+   "26a" q-26a "26b" q-26b "26c" q-26c
+   "27a" q-27a "27b" q-27b "27c" q-27c
+   "28a" q-28a "28b" q-28b "28c" q-28c
+   "29a" q-29a "29b" q-29b "29c" q-29c
+   "30a" q-30a "30b" q-30b "30c" q-30c
+   "31a" q-31a "31b" q-31b "31c" q-31c
+   "32a" q-32a "32b" q-32b
+   "33a" q-33a "33b" q-33b "33c" q-33c))
