@@ -203,6 +203,8 @@ The above query calculates the number of people and their average age living at 
 
 For `min` and `max`, all values in a group must be comparable. Numeric types are comparable; other types cannot be mixed.
 
+In case of a query with only aggregates and no matching tuples, the aggregates do not return the neutral element (for example 0 for `sum` and `count`), but instead return no row.
+
 ## Rules
 
 TODO
