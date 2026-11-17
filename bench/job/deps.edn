@@ -13,7 +13,7 @@
               "--add-opens=java.base/java.util=ALL-UNNAMED"
               "--add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
               "--enable-native-access=ALL-UNNAMED"]}
-  :dev {:extra-paths ["dev" "test"]
+  :dev {:extra-paths ["test"]
         :extra-deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}
                      nrepl/nrepl {:mvn/version "1.3.1"}
                      cider/cider-nrepl {:mvn/version "0.52.1"}}

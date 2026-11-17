@@ -35,3 +35,8 @@
            ;; Datalevin's JVM flags; `java -jar` reads them from the manifest.
            :manifest {"Add-Opens" "java.base/java.lang java.base/java.nio java.base/java.util java.base/sun.nio.ch"
                       "Enable-Native-Access" "ALL-UNNAMED"}}))
+
+(comment
+  (javac nil)
+  (uber nil)
+  (clean nil))
