@@ -64,10 +64,9 @@ impl Accumulator for SumAccumulator {
     }
 
     fn finalize(&self) -> Result<DataType> {
-        match &self.accum {
-            Some(value) => Ok(value.into_data_type()),
-            None => Ok(DataType::Long(0)),
-        }
+        self.accum
+            .map(NumericValue::into_data_type)
+            .ok_or_else(|| anyhow!("sum: no values accumulated"))
     }
 }
 
@@ -271,9 +270,9 @@ mod tests {
     }
 
     #[test]
-    fn test_sum_empty() {
+    fn test_sum_empty_errors() {
         let acc = make_accumulator(&AggregateFunc::Sum);
-        assert_eq!(acc.finalize().unwrap(), DataType::Long(0));
+        assert!(acc.finalize().is_err());
     }
 
     #[test]
