@@ -1,3 +1,4 @@
 {
-  "rust-analyzer.cargo.features": ["kafka", "kafka-integration-test"]
+  "rust-analyzer.cargo.features": ["kafka", "kafka-integration-test"],
+  "rust-analyzer.inlayHints.implicitDrops.enable": false
 }
