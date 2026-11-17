@@ -13,6 +13,7 @@ services:
       interval: 2s
       timeout: 2s
       retries: 60
+
   createbucket:
     image: rustfs/rc:v0.1.36
     depends_on:
@@ -20,6 +21,7 @@ services:
         condition: service_healthy
     entrypoint: /bin/sh
     command: ["-c", "rc alias set local http://rustfs:9000 triplox triplox123 && rc mb --ignore-existing local/job"]
+
   triplox:
     image: ${JOB_TRIPLOX_IMAGE:-triplox:job-benchmark}
     build:
@@ -37,5 +39,6 @@ services:
     depends_on:
       createbucket:
         condition: service_completed_successfully
+
 volumes:
   triplox-data:
