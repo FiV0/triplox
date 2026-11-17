@@ -54,7 +54,7 @@ class ReportTest(unittest.TestCase):
 
     def test_matching_answers(self):
         self.engine("datalevin")
-        self.engine("datomic")
+        self.engine("triplox-standard")
         self.assertTrue(report(self.root))
         self.assertTrue(json.loads((self.root / "comparison.json").read_text())["cross-engine-verified"])
 
@@ -62,21 +62,21 @@ class ReportTest(unittest.TestCase):
         directory = self.engine("datalevin")
         with (directory / "measurements.jsonl").open("a") as stream:
             stream.write("\n" + json.dumps({"phase": "ingestion", "status": "ok", "elapsed-ms": 34}))
-        self.engine("datomic")
+        self.engine("triplox-standard")
         self.assertTrue(report(self.root))
         summary = (self.root / "summary.md").read_text()
         self.assertIn("| datalevin | ok | warmed | query pass on loaded data | 12 | 34 |", summary)
-        self.assertIn("| datomic | ok | warmed | query pass on loaded data | 12 | n/a |", summary)
+        self.assertIn("| triplox-standard | ok | warmed | query pass on loaded data | 12 | n/a |", summary)
 
     def test_mismatch_and_missing_answers_fail(self):
         self.engine("datalevin")
-        directory = self.engine("datomic", "[]")
+        directory = self.engine("triplox-standard", "[]")
         self.assertFalse(report(self.root))
         (directory / "answers/final/1a.edn").unlink()
         self.assertFalse(report(self.root))
 
     def test_failed_runs_and_missing_warmup_fail(self):
-        directory = self.engine("datomic", status="failed")
+        directory = self.engine("datalevin", status="failed")
         self.assertFalse(report(self.root))
         self.write(directory / "status.json", {"status": "ok"})
         (directory / "measurements.jsonl").write_text("")
@@ -84,7 +84,7 @@ class ReportTest(unittest.TestCase):
 
     def test_incompatible_workloads_are_rejected(self):
         self.engine("datalevin")
-        directory = self.engine("datomic")
+        directory = self.engine("triplox-standard")
         self.write(directory / "config.json", {"queries": "2a", "workload": "initial"})
         with self.assertRaises(ValueError):
             report(self.root)
@@ -92,7 +92,7 @@ class ReportTest(unittest.TestCase):
     def test_no_answers_are_not_verification(self):
         self.assertFalse(report(self.root))
         self.engine("datalevin", ingest_only=True)
-        self.engine("datomic", ingest_only=True)
+        self.engine("triplox-standard", ingest_only=True)
         self.assertTrue(report(self.root))
         self.assertFalse(json.loads((self.root / "comparison.json").read_text())["cross-engine-verified"])
 
@@ -119,7 +119,7 @@ class ReportTest(unittest.TestCase):
 
     def test_legacy_maintenance_runs_still_require_all_batch_answers(self):
         self.write(self.root / "manifest.json", {"run-id": "test", "format-version": 1})
-        directory = self.engine("datomic")
+        directory = self.engine("triplox-standard")
         self.legacy_maintenance(directory, legacy=True)
         self.assertTrue(report(self.root))
         (directory / "answers/batch-0/1a.edn").unlink()

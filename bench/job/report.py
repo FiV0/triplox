@@ -48,8 +48,7 @@ def report(root):
                           "initial-ms": first.get("elapsed-ms", initial_queries.get("elapsed-ms")),
                           "initial-metric": "infrastructure check only" if ingest_only else ("ingestion + catch-up" if first else "query pass on loaded data"),
                           "ingestion-ms": ingestion.get("elapsed-ms", first.get("ingestion-ms")), "catchup-ms": first.get("catchup-ms"),
-                          "runner-peak-rss-bytes": max((s.get("runner-rss-bytes", 0) for s in resources), default=0),
-                          "transactor-peak-rss-bytes": max((s.get("transactor-rss-bytes", 0) for s in resources), default=0)})
+                          "runner-peak-rss-bytes": max((s.get("runner-rss-bytes", 0) for s in resources), default=0)})
         if format_version < 3:
             summaries[-1].update({"refresh-count": len(refreshes), "refresh-p50-ms": percentile(durations, .5),
                                   "refresh-p95-ms": percentile(durations, .95),
@@ -70,7 +69,7 @@ def report(root):
                 problems.append(f"{directory.name}: missing or unexpected checkpoint answers")
             if format_version < 3 and config.get("workload") == "maintenance" and (not trace or len(refreshes) != trace.get("batches")):
                 problems.append(f"{directory.name}: incomplete maintenance trace")
-            if directory.name in ("datalevin", "datomic") and not warmed:
+            if directory.name == "datalevin" and not warmed:
                 problems.append(f"{directory.name}: warmup did not complete")
             if not first and not initial_queries:
                 problems.append(f"{directory.name}: measurement missing")
@@ -106,7 +105,7 @@ def report(root):
             writer.writeheader()
             writer.writerows(rows)
     lines = ["# JOB results", "", f"Run: `{manifest['run-id']}`", "",
-             "Datalevin and Datomic query timings exclude loading and the complete cache-warmup pass.",
+             "Datalevin query timings exclude loading and the complete cache-warmup pass.",
              "Triplox incremental initial timings include ingestion and client-view catch-up.",
              "Ingestion covers CSV parsing, transaction construction and acknowledgments;",
              "Triplox incremental ingests with every view registered.", "",

@@ -48,7 +48,7 @@
     pass-ms))
 
 (defn warmup! [engine executor {:keys [output engine-name] :as config}]
-  (when (#{"datalevin" "datomic"} engine-name)
+  (when (= "datalevin" engine-name)
     (query-pass! engine executor config false)
     (artifacts/append! output {:phase "warmup" :status "ok"
                               :queries (count (:query-ids config))})))

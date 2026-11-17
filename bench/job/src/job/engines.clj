@@ -42,24 +42,6 @@
      :query (fn [db id] (mapv vec ((api "q") (get queries/queries id) db)))
      :close! #((api "close-db") @db)}))
 
-(defn- datomic [{:keys [datomic-uri timeout-ms]}]
-  (let [api #(function "datomic.api" %)]
-    (when-not ((api "create-database") datomic-uri)
-      (throw (ex-info "Datomic benchmark database already exists" {:uri datomic-uri})))
-    (let [conn ((api "connect") datomic-uri)
-          current (atom ((api "db") conn))
-          transact! (fn [tx]
-                      (let [result (deref ((api "transact") conn tx) timeout-ms ::timeout)]
-                        (when (= result ::timeout)
-                          (throw (ex-info "Datomic transaction timed out" {})))
-                        (reset! current (:db-after result))
-                        {:tx-id ((api "basis-t") @current)}))]
-      {:schema! #(transact! (data/schema-tx :datomic))
-       :transact! transact!
-       :db #(deref current)
-       :query (fn [db id] (mapv vec ((api "q") (queries/translate id :datomic) db)))
-       :close! #((api "release") conn)})))
-
 (defn- triplox [{:keys [host port]}]
   (let [api #(function "xyz.triplox.api" %)
         view #(function "xyz.triplox.view" %)
@@ -83,7 +65,7 @@
                       (when (seq rejected)
                         (throw (ex-info "Triplox transactions rejected"
                                         {:count (count rejected) :first (first rejected)})))))]
-    {:schema! #(transact! (data/schema-tx :triplox))
+    {:schema! #(transact! (data/schema-tx))
      :transact! #((api "submit-tx") conn %)
      :await-tx! await-tx!
      :indexed-tx #(.txId (.txKey ((api "db") conn)))
@@ -113,6 +95,5 @@
 (defn open! [{:keys [engine] :as config}]
   (case engine
     "datalevin" (datalevin config)
-    "datomic" (datomic config)
     ("triplox-standard" "triplox-incremental") (triplox config)
     (throw (ex-info "Unknown benchmark engine" {:engine engine}))))

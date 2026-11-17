@@ -1,8 +1,7 @@
 # JOB benchmark
 
 Run the 113 Join Order Benchmark queries ported from Datalevin against
-Datalevin, Datomic Pro Peer, Triplox standard queries, and Triplox incremental
-queries. The source, schema, numeric ID offsets, and expected answers are
+Datalevin, Triplox standard queries, and Triplox incremental queries. The source, schema, numeric ID offsets, and expected answers are
 vendored; no sibling Datalevin checkout is needed. See [NOTICE.md](NOTICE.md).
 
 Build the server and client from this checkout before running Triplox queries.
@@ -48,11 +47,10 @@ cd bench/job
   --batch-size 1
 ```
 
-This checks both baselines, including the full cache warmup and answer
-comparison. The small fixture exercises only a few joins; most query answers
+This checks the Datalevin baseline, including the full cache warmup. The small fixture exercises only a few joins; most query answers
 are empty. Its timings are smoke-test output, not representative JOB results.
 
-Build this checkout and check all four modes:
+Build this checkout and check all three modes:
 
 ```bash
 ./job prepare --build-triplox --engine all
@@ -97,8 +95,8 @@ which disables that check; cross-engine comparisons still run. A modified
 IMDb dataset needs its own expectations and should not be presented as the
 original JOB dataset.
 
-Select `--engine datalevin`, `datomic`, `triplox-standard`,
-`triplox-incremental`, `baselines`, or `all`. `all` runs the four modes
+Select `--engine datalevin`, `triplox-standard`, `triplox-incremental`,
+`baselines`, or `all`. `baselines` runs Datalevin. `all` runs the three modes
 sequentially with fresh state. Use `--queries 1a,11a,32a` for a subset; the
 manifest records the selection. Full-suite results require all 113 queries to
 finish successfully. Each invocation is one repetition; repeat the command
@@ -109,11 +107,10 @@ for independent runs, retaining each run directory.
 | Mode | Score |
 |---|---|
 | Datalevin | Complete query pass after warmup |
-| Datomic Pro Peer | Complete query pass after warmup |
 | Triplox standard | Complete query pass on loaded data |
 | Triplox incremental | Ingestion + final view catchup |
 
-Datalevin and Datomic load the entire dataset, then execute one complete pass
+Datalevin loads the entire dataset, then execute one complete pass
 of the selected queries without measuring it. Only after that pass completes
 does measurement start. Warmup and measurement use the same JVM, connection,
 database value, query order, and query thread, with normal caches enabled.
@@ -151,15 +148,15 @@ Default controls:
 - `--batch-size 1000`: maximum source rows per ingestion transaction.
 - `--max-bytes 262144`: maximum serialized EDN transaction bytes; large batches
   split deterministically. This is not a wire-byte or datom-count limit.
-- `--heap 4g --transactor-heap 2g`: runner JVM and separate transactor heaps.
+- `--heap 4g`: runner JVM heap.
 - `--timeout-ms 600000`: transaction, query, and registration deadlines. Query
   interruption is best effort; the process exits on failure. Waiting for the
   last loaded transaction to be indexed has no deadline.
 - `--catchup-timeout-ms 600000`: deadline for every incremental view to apply
   the last loaded transaction, counted from the end of indexing.
 - `--run-timeout-seconds 86400`: outer limit for each JVM process.
-- `--port 15490 --datomic-port 14334`: local service ports; Datomic also needs
-  the next port for H2. Occupied ports fail instead of reusing another service.
+- `--port 15490`: local Triplox port. An occupied port fails instead of reusing
+  another service.
 
 The portable loader adds `:job/id` with unique identity and creates stubs for
 forward references. It keeps the upstream ID offsets but lets each engine
@@ -167,23 +164,15 @@ allocate its own entity IDs. All modes receive the same transaction data.
 `load.json` counts source rows and attempted datoms, including repeated
 identity assertions and stubs; it does not claim those are distinct writes.
 
-Datalevin runs the original query forms. Datomic and Triplox get portable
-variable names without dots. Datomic gets pure Clojure predicate helpers for
-Datalevin's nested predicates, string comparisons, `like`, and `in`.
-Triplox gets native scalar expressions
+Datalevin runs the original query forms. Triplox gets portable variable
+names without dots, native scalar expressions
 and anchored regular expressions for `like`. Missing attributes use negation
 with `_` placeholders. These adaptations preserve intent but can affect query
 planning and cost. Each engine's actual query forms are saved in `queries.edn`.
 
 ## Services and storage
 
-Datalevin 1.1.0 runs embedded with its database under `state/`. Datomic Pro
-1.0.7705 uses the Peer library and its own local transactor process, with
-`protocol=dev` and an explicit disk `data-dir`. The launcher downloads the
-matching Pro distribution, records its archive checksum, and writes each
-transactor's properties. This is persisted H2-backed dev storage, not an
-in-memory Datomic database. See the [Pro releases](https://docs.datomic.com/releases-pro.html)
-and [storage documentation](https://docs.datomic.com/operation/storage.html).
+Datalevin 1.1.0 runs embedded with its database under `state/`.
 
 Triplox uses [compose.yml](compose.yml): a pinned RustFS image, bucket setup,
 and the image built from this checkout. Object storage, local log, cache, and
@@ -202,18 +191,16 @@ when the checkout changes.
 A query-free infrastructure check is also available:
 
 ```bash
-./job run --engine datomic --data-dir data/fixture --ingest-only
+./job run --engine datalevin --data-dir data/fixture --ingest-only
 ./job run --engine triplox-standard --data-dir data/fixture --ingest-only
 ```
 
-For manual service inspection, `./job up --engine datomic` or
-`./job up --engine triplox-standard` prints the owned state directory and
+For manual service inspection, `./job up --engine triplox-standard` prints the owned state directory and
 leaves the service running. Normal `run` invocations stop their services on
 completion or failure, retain databases/volumes, and preserve logs. Cleanup is
 limited to the specific owned state directory:
 
 ```bash
-./job down --state state/<run-id>-datomic --remove
 ./job down --state state/<run-id>-triplox-incremental --remove
 ```
 
@@ -240,7 +227,7 @@ reports with `./job report --runs runs/<run-id>`.
   sampled process RSS/container statistics, and persisted state size.
   Container runs also include `containers.json` and `container-disk.json`.
   Resource sampling includes setup and warmup, not just measured query phases.
-- `<engine>/status.json`, `runner.log`, `transactor.log` or `compose.log`:
+- `<engine>/status.json`, `runner.log`, `compose.log`:
   success/failure and diagnostic evidence.
 - `summary.csv`, `queries.csv`, `summary.md`, `comparison.json`: regenerated
   summaries, per-query timings, missing or differing final answers, and whether

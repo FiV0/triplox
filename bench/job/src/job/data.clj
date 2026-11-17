@@ -13,11 +13,10 @@
 (defn ref-attribute? [attribute]
   (= :db.type/ref (get-in schema [attribute :db/valueType])))
 
-(defn schema-tx [engine]
+(defn schema-tx []
   (mapv (fn [[attribute properties]]
-          (cond-> (merge {:db/ident attribute :db/cardinality :db.cardinality/one}
-                        properties)
-            (= engine :datomic) (assoc :db/index true)))
+          (merge {:db/ident attribute :db/cardinality :db.cardinality/one}
+                 properties))
         (sort-by key schema)))
 
 (defn table-file [directory table]

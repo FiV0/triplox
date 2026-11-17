@@ -14,7 +14,7 @@
         database (Object.)
         engine {:db (constantly database)
                 :query (fn [db id] (swap! calls conj [:query id db (Thread/currentThread)]) [[id]])}
-        config {:query-ids ["1a" "2a"] :output "unused" :engine-name "datomic" :timeout-ms 1000}]
+        config {:query-ids ["1a" "2a"] :output "unused" :engine-name "datalevin" :timeout-ms 1000}]
     (try
       (with-redefs [artifacts/append! (fn [_ event] (swap! calls conj [:event event]))
                     artifacts/save-result! (fn [& _] {})]
@@ -95,7 +95,7 @@
         (doseq [file (reverse (file-seq directory))] (io/delete-file file))))))
 
 (deftest benchmark-checks-and-saves-only-final-loaded-results
-  (doseq [engine ["datalevin" "datomic" "triplox-standard" "triplox-incremental"]]
+  (doseq [engine ["datalevin" "triplox-standard" "triplox-incremental"]]
     (with-loaded-run engine (fn [db id] [[id db]])
       (fn [run! directory queries]
         (run!)

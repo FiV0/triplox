@@ -7,7 +7,7 @@
   (is (= (set (keys q/queries)) (set (keys q/expected)))))
 
 (deftest query-translations
-  (doseq [engine [:triplox :datomic :datalevin]
+  (doseq [engine [:triplox :datalevin]
           id (keys q/queries)]
     (is (= :find (first (q/translate id engine)))))
   (is (some #(and (seq? %) (= 'not (first %))
@@ -16,20 +16,18 @@
   (is (= '(if (<= 1950 ?year) (if (<= ?year 2000) true false) false)
          (q/expression '(<= 1950 ?year 2000) :triplox))))
 
-(deftest patterns-and-datomic-predicates
+(defn- like? [value pattern]
+  (boolean (re-matches (re-pattern (q/like-regex pattern)) value)))
+
+(deftest like-patterns
   (is (= "(?s)\\A.*\\(film\\).*\\z" (q/like-regex "%(film)%")))
-  (is (q/like? "\\.^$|?*+()[]{}" "\\.^$|?*+()[]{}"))
-  (is (q/like? "a\nb" "%a_b%"))
-  (is (q/like? "(film)" "%(film)%"))
-  (is (not (q/like? "film" "%(film)%")))
-  (is (not (q/like? "prefixFilm" "Film%")))
-  (is (q/predicate "(and (< ?x \"3.5\") (like ?title \"%Film%\"))"
-                   "[?x ?title]" "2.0" "A Film"))
-  (is (not (q/predicate "(in ?x [\"cast\" \"crew\"])" "[?x]" "actor"))))
+  (is (like? "\\.^$|?*+()[]{}" "\\.^$|?*+()[]{}"))
+  (is (like? "a\nb" "%a_b%"))
+  (is (like? "(film)" "%(film)%"))
+  (is (not (like? "film" "%(film)%")))
+  (is (not (like? "prefixFilm" "Film%"))))
 
 (deftest translated-variables-are-portable
-  (doseq [engine [:datomic :triplox]
-          id (keys q/queries)]
+  (doseq [id (keys q/queries)]
     (is (not-any? #(and (symbol? %) (.contains (str %) "."))
-                  (remove #{'job.queries/predicate}
-                          (tree-seq coll? seq (q/translate id engine)))))))
+                  (tree-seq coll? seq (q/translate id :triplox))))))

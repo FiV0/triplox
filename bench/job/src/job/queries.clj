@@ -36,45 +36,6 @@
                                (str "\\" %) (str %))) pattern))
        "\\z"))
 
-(def ^:private compiled-like (memoize #(re-pattern (like-regex %))))
-
-(defn like? [value pattern]
-  (boolean (re-matches (compiled-like pattern) value)))
-
-(defn- evaluate-expression [form env]
-  (cond
-    (symbol? form) (get env form form)
-    (not (seq? form)) form
-    :else
-    (let [[op & args] form
-          values #(mapv (fn [arg] (evaluate-expression arg env)) args)]
-      (case op
-        and (every? #(evaluate-expression % env) args)
-        or (boolean (some #(evaluate-expression % env) args))
-        like (apply like? (values))
-        not-like (not (apply like? (values)))
-        in (let [[value choices] (values)] (boolean (some #{value} choices)))
-        not= (apply not= (values))
-        = (apply = (values))
-        (< <= > >=)
-        (every? (fn [[a b]]
-                  (let [comparison (compare a b)]
-                    (case op < (neg? comparison) <= (not (pos? comparison))
-                          > (pos? comparison) >= (not (neg? comparison)))))
-                (partition 2 1 (values)))
-        (throw (ex-info "Unsupported JOB expression" {:form form}))))))
-
-(def ^:private parsed-expression (memoize edn/read-string))
-
-(defn predicate [encoded variables & values]
-  (boolean (evaluate-expression (parsed-expression encoded)
-                               (zipmap (parsed-expression variables) values))))
-
-(defn- datomic-predicate [form]
-  (let [variables (vec (distinct (filter #(and (symbol? %) (str/starts-with? (str %) "?"))
-                                       (tree-seq coll? seq form))))]
-    [(apply list 'job.queries/predicate (pr-str form) (pr-str variables) variables)]))
-
 (defn- boolean-chain [op args]
   (if (= op 'and)
     (reduce #(list 'if %2 %1 false) true (reverse args))
@@ -94,9 +55,7 @@
         (let [[value pattern] args
               predicate (if (= engine :triplox)
                           (list 'regexp_like value (like-regex pattern))
-                          (if (= engine :datomic)
-                            (list 'job.queries/like? value pattern)
-                            (list 'like value pattern)))]
+                          (list 'like value pattern))]
           (if (= op 'not-like) (list 'not predicate) predicate))
         (and (#{'< '<= '> '>=} op) (> (count args) 2))
         (boolean-chain 'and (map #(apply list op %) (partition 2 1 args)))
@@ -108,7 +67,7 @@
     (walk/postwalk-replace (zipmap variables (map #(symbol (str "?jobv" %)) (range))) query)))
 
 (defn translate [id engine]
-  (let [query (cond-> (get queries id) (#{:datomic :triplox} engine) portable-variables)
+  (let [query (cond-> (get queries id) (= :triplox engine) portable-variables)
         [find-part [_ & clauses]] (split-with #(not= :where %) query)]
     (when-not query (throw (ex-info "Unknown query" {:id id})))
     (into (vec (concat find-part [:where]))
@@ -117,8 +76,6 @@
                    (let [[op _ entity attribute] (first clause)]
                      (if (= op 'missing?)
                        (list 'not [entity attribute '_])
-                       (if (= engine :datomic)
-                         (datomic-predicate (first clause))
-                         [(expression (first clause) engine)])))
+                       [(expression (first clause) engine)]))
                    clause)))
           clauses)))
