@@ -43,8 +43,7 @@ flush is not isolated; use separate drives for full isolation.
 cd bench/job
 ./job prepare --fixture --data-dir data/fixture --engine baselines
 ./job test
-./job run --engine baselines --data-dir data/fixture \
-  --batch-size 1
+./job run --engine baselines --data-dir data/fixture
 ```
 
 This checks the Datalevin baseline, including the full cache warmup. The small fixture exercises only a few joins; most query answers
@@ -145,9 +144,11 @@ it does not delete, restore, or modify data to test incremental maintenance.
 
 Default controls:
 
-- `--batch-size 1000`: maximum source rows per ingestion transaction.
-- `--max-bytes 262144`: maximum serialized EDN transaction bytes; large batches
-  split deterministically. This is not a wire-byte or datom-count limit.
+- `--batch-size 1000`: maximum source rows per Triplox ingestion transaction.
+  Datalevin bulk-loads and ignores it.
+- `--max-bytes 262144`: maximum serialized EDN bytes per Triplox transaction;
+  large batches split deterministically. This is not a wire-byte or datom-count
+  limit.
 - `--heap 4g`: runner JVM heap.
 - `--timeout-ms 600000`: transaction, query, and registration deadlines. Query
   interruption is best effort; the process exits on failure. Waiting for the
@@ -158,11 +159,24 @@ Default controls:
 - `--port 15490`: local Triplox port. An occupied port fails instead of reusing
   another service.
 
-The portable loader adds `:job/id` with unique identity and creates stubs for
-forward references. It keeps the upstream ID offsets but lets each engine
-allocate its own entity IDs. All modes receive the same transaction data.
-`load.json` counts source rows and attempted datoms, including repeated
-identity assertions and stubs; it does not claim those are distinct writes.
+Both engines read the CSVs through the same table readers, which turn each
+row into triples whose entity ID is the row ID plus a per-table offset. The
+engines load those triples differently:
+
+- Datalevin loads them the way Datalevin's own JOB-bench does. The offset IDs
+  become its entity IDs, and the triples go straight into `fill-db` as trusted
+  datoms, without transactions, tempids or upserts. `analyze` runs afterwards.
+- Triplox assigns its own entity IDs, so both Triplox modes go through the
+  portable loader. It stores the offset ID as `:job/id`, a unique-identity
+  attribute. Every entity and every reference becomes a tempid, which upserts
+  on `:job/id`. The loader adds stubs for references to rows that are not
+  loaded yet. Rows are submitted in batches limited by `--batch-size` and
+  `--max-bytes`.
+
+So the two engines do different loading work, and their load times are not
+comparable. `load.json` counts source rows and attempted datoms. For Triplox,
+that includes repeated identity assertions and stubs; it does not claim those
+are distinct writes.
 
 Datalevin runs the original query forms. Triplox gets portable variable
 names without dots, native scalar expressions
