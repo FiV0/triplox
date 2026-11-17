@@ -906,7 +906,7 @@
                                          [?e :age ?value])]}) )))
 
 (deftest test-aggregate-empty-result
-  (is (= #{[0]} (q '{:find [(count ?e)]
+  (is (= #{} (q '{:find [(count ?e)]
                      :where [[?e :name "nobody"]]}))))
 
 (deftest test-expressions-in-aggregates

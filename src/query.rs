@@ -596,15 +596,6 @@ fn execute_aggregation(results: Vec<BindingRow>, plan: &FindPlan) -> Result<Quer
         })
         .collect();
 
-    // When there are no group-by variables (all-aggregate query), all rows
-    // collapse into a single group. Seed it so that empty input still
-    // produces one output row.
-    if plan.group_key_indices.is_empty() {
-        let accs: Vec<Box<dyn Accumulator>> =
-            agg_funcs.iter().map(|f| make_accumulator(f)).collect();
-        groups.insert(Vec::new(), (Vec::new(), accs));
-    }
-
     for tuple in &results {
         let mut group_key = Vec::new();
         for &idx in &plan.group_key_indices {
@@ -907,16 +898,22 @@ mod tests {
 
     #[test]
     fn test_execute_aggregation_all_aggs_empty_input() {
-        // [:find (count ?e)] with no results -> single row [[0]]
-        let plan = FindPlan {
-            group_key_indices: vec![],
-            projections: vec![Projection::Aggregate(AggregateFunc::Count, 0)],
-            has_aggregates: true,
-        };
-        let results: Vec<BindingRow> = vec![];
-        let output = execute_aggregation(results, &plan).unwrap();
-        assert_eq!(output.len(), 1);
-        assert_eq!(output[0], vec![DataType::Long(0)]);
+        // [:find (agg ?e)] with no results -> no rows
+        for aggregate in [
+            AggregateFunc::Count,
+            AggregateFunc::CountDistinct,
+            AggregateFunc::Sum,
+            AggregateFunc::Min,
+            AggregateFunc::Max,
+            AggregateFunc::Avg,
+        ] {
+            let plan = FindPlan {
+                group_key_indices: vec![],
+                projections: vec![Projection::Aggregate(aggregate, 0)],
+                has_aggregates: true,
+            };
+            assert!(execute_aggregation(vec![], &plan).unwrap().is_empty());
+        }
     }
 
     #[test]

@@ -674,14 +674,14 @@ async fn test_aggregate_empty_result() {
     let client = ClientNode::connect(&addr).await.unwrap();
     define_base_schema(&client).await;
 
-    // No data inserted — count over empty result should return [[0]]
+    // No data inserted — count over empty result returns no rows
     let db = client.db().await.unwrap();
 
     let result = db
         .query(r#"{:find [(count ?e)] :where [[?e :name "nobody"]]}"#)
         .await
         .unwrap();
-    assert_eq!(result, vec![vec![DataType::Long(0)]]);
+    assert!(result.is_empty());
     token.cancel();
 }
 

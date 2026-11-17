@@ -953,7 +953,7 @@ mod tests {
         )
         .await;
         let mut names = register(&service, single_pattern_plan()).await;
-        delta(&mut aggregate).await.unwrap();
+        take_empty_priming(&mut aggregate).await;
         apply_batch(
             &batches,
             single_batch(test_tx_key_with_tx_id(2), vec![age_triple(42, 10)]),
