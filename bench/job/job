@@ -20,7 +20,7 @@ import urllib.request
 import uuid
 
 ROOT = Path(__file__).resolve().parent
-REPO = ROOT.parent.parent
+JAR = ROOT / "target/job.jar"
 # Loop-mounted filesystems created by ./disks, keyed by the compose variable they back.
 DISK_MOUNTS = {"JOB_RUSTFS_DIR": ROOT / "disks.d/mnt/rustfs",
                "JOB_SLATEDB_CACHE_DIR": ROOT / "disks.d/mnt/slatedb-cache"}
@@ -61,14 +61,11 @@ def download(url, target):
     return target
 
 
-def compile_java():
-    classes = ROOT / "target/classes"
-    classes.mkdir(parents=True, exist_ok=True)
-    command(["javac", "-d", classes, ROOT / "java/job/CSVReader.java"])
+def build(task):
+    command(["clojure", "-T:build", task])
 
 
 def prepare(args):
-    compile_java()
     if args.fixture:
         directory = Path(args.data_dir).resolve()
         directory.mkdir(parents=True, exist_ok=True)
@@ -100,16 +97,12 @@ def prepare(args):
                     with tar.extractfile(member) as source, (directory / Path(member.name).name).open("wb") as target:
                         shutil.copyfileobj(source, target)
         write_json(directory / "archive.json", {"sha256": digest(archive)})
-    if args.engine in ("all", "baselines", "datalevin"):
-        command(["clojure", "-P", "-M:datalevin"])
     if args.build_triplox:
-        command([REPO / "triplox-jvm/gradlew", "-p", REPO / "triplox-jvm",
-                 "publishToMavenLocal", "-x", "test", "-PtriploxVersion=0.1.0-job-benchmark",
-                 "-PsignAllPublications=false"])
         command(["docker", "compose", "-f", ROOT / "compose.yml", "build",
                  "--build-arg", f"GIT_SHA={capture(['git', 'rev-parse', 'HEAD'])}", "triplox"],
                 # The bind-mount directories are only needed to run, not to build.
                 env=dict(os.environ, **{variable: "/unused" for variable in DISK_MOUNTS}))
+    build("uber")
 
 
 def wait_port(port, timeout=120):
@@ -217,14 +210,10 @@ def monitor(config, process, stop):
 
 def run_process(config):
     engine = config["engine"]
-    alias = "triplox" if engine.startswith("triplox") else engine
-    if engine == "manifest":
-        alias = ""
     output = Path(config["output"])
     config_file = output / "config.json"
     write_json(config_file, config)
-    args = ["clojure", f"-J-Xmx{config['heap']}", "-M" + (":" + alias if alias else ""),
-            "-m", "job.main", str(config_file)]
+    args = ["java", f"-Xmx{config['heap']}", "-jar", JAR, config_file]
     with (output / "runner.log").open("w") as log:
         process = subprocess.Popen(args, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
                                    start_new_session=True)
@@ -255,7 +244,7 @@ def run(args):
         raise RuntimeError("up requires one --engine")
     if args.command == "up" and args.engine == "datalevin":
         raise RuntimeError("Datalevin is embedded; use run instead of up")
-    compile_java()
+    build("uber")
     run_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
     root = ROOT / "runs" / run_id
     root.mkdir(parents=True)
@@ -264,7 +253,7 @@ def run(args):
     base.update({"data-dir": str(Path(args.data_dir).resolve()), "host": "127.0.0.1",
                  "verify-expected": not (Path(args.data_dir) / "fixture.json").exists()})
     files = [p for p in ROOT.rglob("*") if p.is_file() and "__pycache__" not in p.parts and
-             p.relative_to(ROOT).parts[0] not in {"runs", "state", "data", "downloads", "disks.d", "target", "__pycache__", ".cpcache"}]
+             p.relative_to(ROOT).parts[0] not in {"runs", "state", "data", "downloads", "disks.d", "target", "classes", "__pycache__", ".cpcache"}]
     manifest = {"format-version": 3, "run-id": run_id, "config": base,
                 "git-revision": capture(["git", "rev-parse", "HEAD"]),
                 "git-status": capture(["git", "status", "--short"]),
@@ -350,7 +339,7 @@ def main():
     if args.command == "prepare":
         prepare(args)
     elif args.command == "test":
-        compile_java()
+        build("javac")
         command(["clojure", "-M:test"])
         command([sys.executable, "-m", "unittest", "discover", "-s", "test", "-p", "test_*.py"])
     elif args.command == "down":

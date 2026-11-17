@@ -6,3 +6,5 @@
 /.cpcache/
 __pycache__/
 /disks.d/
+/classes/*
+!/classes/.gitkeep

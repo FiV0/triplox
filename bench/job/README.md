@@ -4,12 +4,13 @@ Run the 113 Join Order Benchmark queries ported from Datalevin against
 Datalevin, Triplox standard queries, and Triplox incremental queries. The source, schema, numeric ID offsets, and expected answers are
 vendored; no sibling Datalevin checkout is needed. See [NOTICE.md](NOTICE.md).
 
-Build the server and client from this checkout before running Triplox queries.
+Build the server from this checkout before running Triplox queries. The
+Triplox client comes from `../../triplox-jvm` as source (see [Development](#development)).
 
 ## Prerequisites
 
-Linux, Python 3.11+, Java 21, Clojure CLI, and Docker with Compose v2.
-Building Triplox uses the repository Dockerfile and Gradle wrapper. Internet
+Linux, Python 3.11+, JDK 21+, Clojure CLI, and Docker with Compose v2.
+Building the Triplox server uses the repository Dockerfile. Internet
 access is needed for the initial dependency/image downloads. Use a machine
 with room for the CSVs, archive, Docker build cache, and a separate persisted
 database for every engine and repetition. The full dataset is not downloaded
@@ -61,16 +62,14 @@ The fixture includes matches for queries 11a and 11b, whose missing-attribute
 checks translate to `(not [?mc :movie-companies/note _])`.
 
 For a small fixture check of the final results, start a dev server from the
-repository root (`cargo run -- config/triplox-dev.toml`), publish this checkout's
-client, and run from this directory:
+repository root (`cargo run -- config/triplox-dev.toml`) and run from this
+directory:
 
 ```bash
-../../triplox-jvm/gradlew -p ../../triplox-jvm publishToMavenLocal -x test \
-  -PtriploxVersion=0.1.0-job-benchmark -PsignAllPublications=false
-clojure -M:datalevin:triplox:integration-test
+clojure -M:datalevin:integration-test
 ```
 
-Run `./job test` first to compile the CSV reader. Set `TRIPLOX_HOST` and
+Run `./job test` first to compile the Java sources. Set `TRIPLOX_HOST` and
 `TRIPLOX_PORT` to override `127.0.0.1:5490`. Use the dev configuration, which
 gives each connection its own in-memory database.
 It registers all 113 views before batched ingestion, waits for the final
@@ -100,6 +99,21 @@ sequentially with fresh state. Use `--queries 1a,11a,32a` for a subset; the
 manifest records the selection. Full-suite results require all 113 queries to
 finish successfully. Each invocation is one repetition; repeat the command
 for independent runs, retaining each run directory.
+
+## Development
+
+The Triplox client is a `:local/root` dependency on `../../triplox-jvm`, so
+the benchmark always uses this checkout's client. `build.clj` compiles the
+client's Java sources and `java/job/CSVReader.java` into `classes/`.
+
+- `clojure -M:datalevin:dev` starts an nREPL server on port 7888 (add `--port <n>`
+  to change it). `dev/user.clj` compiles the Java sources on start, so no build
+  step is needed first.
+- `clojure -T:build javac` compiles the Java sources only.
+- `clojure -T:build uber` builds `target/job.jar`. `./job prepare` and `./job run`
+  build it, and `./job run` starts each engine with `java -jar target/job.jar`.
+  The jar manifest carries Datalevin's `--add-opens` flags.
+- `clojure -T:build clean` deletes `target/`.
 
 ## What is measured
 

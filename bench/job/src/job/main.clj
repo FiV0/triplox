@@ -1,4 +1,5 @@
 (ns job.main
+  (:gen-class)
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [job.artifacts :as artifacts]
