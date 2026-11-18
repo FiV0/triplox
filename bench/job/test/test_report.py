@@ -19,39 +19,20 @@ class ReportTest(unittest.TestCase):
 
     def engine(self, engine, answer='[["answer"]]', status="ok", ingest_only=False):
         directory = self.root / engine
-        self.write(directory / "config.json", {"queries": "1a", "workload": "initial", "ingest-only": ingest_only})
+        self.write(directory / "config.json", {"queries": "1a", "ingest-only": ingest_only})
         self.write(directory / "status.json", {"status": status})
         self.write(directory / "selection.json", ["1a"])
         if not ingest_only:
-            version = json.loads((self.root / "manifest.json").read_text())["format-version"]
-            checkpoint = None if version >= 4 else "final" if version >= 3 else "initial"
-            answer_file = directory / "answers" / (checkpoint or "") / "1a.edn"
+            answer_file = directory / "answers" / "1a.edn"
             answer_file.parent.mkdir(parents=True)
             answer_file.write_text(answer)
-            tag = {} if checkpoint is None else {"checkpoint": checkpoint}
             events = [{"phase": "warmup", "status": "ok"},
-                      {"phase": "query-pass", **tag, "status": "ok", "elapsed-ms": 12}]
+                      {"phase": "query-pass", "status": "ok", "elapsed-ms": 12}]
             if engine == "triplox-incremental":
                 events = [{"phase": "initial", "status": "ok", "elapsed-ms": 12},
-                          {"phase": "verification", **tag, "status": "ok", "queries": 1}]
+                          {"phase": "verification", "status": "ok", "queries": 1}]
             (directory / "measurements.jsonl").write_text("\n".join(map(json.dumps, events)))
         return directory
-
-    def legacy_maintenance(self, directory, answer='[["final"]]', legacy=False):
-        config = json.loads((directory / "config.json").read_text())
-        self.write(directory / "config.json", dict(config, workload="maintenance"))
-        self.write(directory / "trace.json", {"sha256": "same-trace", "batches": 2})
-        for checkpoint in (["batch-0", "batch-1"] if legacy else ["final"]):
-            answer_file = directory / "answers" / checkpoint / "1a.edn"
-            answer_file.parent.mkdir(parents=True)
-            answer_file.write_text(answer)
-        with (directory / "measurements.jsonl").open("a") as stream:
-            for index in range(2):
-                stream.write("\n" + json.dumps({"phase": "refresh", "checkpoint": f"batch-{index}",
-                                               "status": "ok", "elapsed-ms": index + 1, "source-rows": 1}))
-            if directory.name == "triplox-incremental" and not legacy:
-                stream.write("\n" + json.dumps({"phase": "verification", "checkpoint": "final",
-                                               "status": "ok", "queries": 1}))
 
     def test_matching_answers(self):
         self.engine("datalevin")
@@ -86,7 +67,7 @@ class ReportTest(unittest.TestCase):
     def test_incompatible_workloads_are_rejected(self):
         self.engine("datalevin")
         directory = self.engine("triplox-standard")
-        self.write(directory / "config.json", {"queries": "2a", "workload": "initial"})
+        self.write(directory / "config.json", {"queries": "2a"})
         with self.assertRaises(ValueError):
             report(self.root)
 
@@ -118,27 +99,8 @@ class ReportTest(unittest.TestCase):
         self.assertFalse(report(self.root))
         self.assertFalse(json.loads((self.root / "comparison.json").read_text())["incremental-standard-verified"])
 
-    def test_legacy_maintenance_runs_still_require_all_batch_answers(self):
-        self.write(self.root / "manifest.json", {"run-id": "test", "format-version": 1})
-        directory = self.engine("triplox-standard")
-        self.legacy_maintenance(directory, legacy=True)
-        self.assertTrue(report(self.root))
-        (directory / "answers/batch-0/1a.edn").unlink()
-        self.assertFalse(report(self.root))
-
-    def test_format_three_final_checkpoint_answers_remain_reportable(self):
+    def test_older_run_formats_are_rejected(self):
+        self.engine("datalevin")
         self.write(self.root / "manifest.json", {"run-id": "test", "format-version": 3})
-        self.engine("triplox-standard")
-        directory = self.engine("triplox-incremental")
-        self.assertTrue(report(self.root))
-        self.assertTrue(json.loads((self.root / "comparison.json").read_text())["incremental-standard-verified"])
-        (directory / "answers/final/1a.edn").unlink()
-        self.assertFalse(report(self.root))
-
-    def test_format_two_initial_and_final_answers_remain_reportable(self):
-        self.write(self.root / "manifest.json", {"run-id": "test", "format-version": 2})
-        directory = self.engine("triplox-incremental")
-        self.legacy_maintenance(directory)
-        self.assertTrue(report(self.root))
-        (directory / "answers/final/1a.edn").unlink()
-        self.assertFalse(report(self.root))
+        with self.assertRaises(ValueError):
+            report(self.root)

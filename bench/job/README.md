@@ -264,8 +264,8 @@ configurations, differing/missing answers, or missing
 standard-query verification for incremental runs. A single engine run can
 check the original expected answers; an incremental run also checks standard
 Triplox queries, but neither establishes cross-engine parity on its own.
-Ingestion-only reports explicitly omit query verification. Older format-1 to format-3
-runs remain reportable using their original saved checkpoints.
+Ingestion-only reports explicitly omit query verification. The reporter only
+accepts the current run format (4); older run directories are rejected.
 Do not combine a failed/partial run into a full-suite performance score.
 
 Keep generated data, state, downloads, and runs out of Git. For published
