@@ -70,10 +70,10 @@
      :await-tx! await-tx!
      :indexed-tx #(.txId (.txKey ((api "db") conn)))
      :db #((api "db") conn)
-     :query (fn [db id] ((api "q") db (queries/translate id :triplox)))
+     :query (fn [db id] ((api "q") db (queries/translate id)))
      ;; Every batch sends a delta, empty if unchanged, so a watch on the rows sees each applied tx-key.
      :view! (fn [id]
-              (let [v ((view "->view") conn (queries/translate id :triplox))
+              (let [v ((view "->view") conn (queries/translate id))
                     applied (atom nil)]
                 ;; The watch runs on the view's worker right after it applies a delta.
                 (add-watch (:view v) ::applied (fn [& _] (reset! applied ((api "tx-key") (:sub v)))))

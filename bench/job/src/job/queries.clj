@@ -2,7 +2,6 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [clojure.walk :as walk]
             [job.job-queries :as job-queries]))
 
 (def queries job-queries/queries)
@@ -30,33 +29,24 @@
     (reduce #(list 'if %2 %1 false) true (reverse args))
     (reduce #(list 'if %2 true %1) false (reverse args))))
 
-(declare expression)
-
-(defn expression [form engine]
+(defn expression [form]
   (if-not (seq? form)
     form
     (let [[op & args] form
-          args (mapv #(expression % engine) args)]
+          args (mapv expression args)]
       (cond
         (#{'and 'or} op) (boolean-chain op args)
         (= op 'in) (boolean-chain 'or (map #(list '= (first args) %) (second args)))
         (#{'like 'not-like} op)
         (let [[value pattern] args
-              predicate (if (= engine :triplox)
-                          (list 'regexp_like value (like-regex pattern))
-                          (list 'like value pattern))]
+              predicate (list 'regexp_like value (like-regex pattern))]
           (if (= op 'not-like) (list 'not predicate) predicate))
         (and (#{'< '<= '> '>=} op) (> (count args) 2))
         (boolean-chain 'and (map #(apply list op %) (partition 2 1 args)))
         :else (apply list op args)))))
 
-(defn- portable-variables [query]
-  (let [variables (distinct (filter #(and (symbol? %) (str/starts-with? (str %) "?"))
-                                    (tree-seq coll? seq query)))]
-    (walk/postwalk-replace (zipmap variables (map #(symbol (str "?jobv" %)) (range))) query)))
-
-(defn translate [id engine]
-  (let [query (cond-> (get queries id) (= :triplox engine) portable-variables)
+(defn translate [id]
+  (let [query (get queries id)
         [find-part [_ & clauses]] (split-with #(not= :where %) query)]
     (when-not query (throw (ex-info "Unknown query" {:id id})))
     (into (vec (concat find-part [:where]))
@@ -65,6 +55,6 @@
                    (let [[op _ entity attribute] (first clause)]
                      (if (= op 'missing?)
                        (list 'not [entity attribute '_])
-                       [(expression (first clause) engine)]))
+                       [(expression (first clause))]))
                    clause)))
           clauses)))

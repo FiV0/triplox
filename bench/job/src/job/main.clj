@@ -16,12 +16,10 @@
     (try
       (if (= "manifest" (:engine config))
         (artifacts/write-json! (io/file output "dataset.json") (data/dataset-manifest (:data-dir config)))
-        (let [dialect (if (.startsWith ^String (:engine config) "triplox") :triplox
-                          (keyword (:engine config)))
-              query-forms (into (sorted-map)
-                                (map (fn [id] [id (if (= dialect :datalevin)
+        (let [query-forms (into (sorted-map)
+                                (map (fn [id] [id (if (= "datalevin" (:engine config))
                                                     (get queries/queries id)
-                                                    (queries/translate id dialect))]))
+                                                    (queries/translate id))]))
                                 (:query-ids config))
               _ (spit (io/file output "queries.edn") (pr-str query-forms))
               _ (artifacts/write-json! (io/file output "selection.json") (:query-ids config))

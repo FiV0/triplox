@@ -7,14 +7,13 @@
   (is (= (set (keys q/queries)) (set (keys q/expected)))))
 
 (deftest query-translations
-  (doseq [engine [:triplox :datalevin]
-          id (keys q/queries)]
-    (is (= :find (first (q/translate id engine)))))
+  (doseq [id (keys q/queries)]
+    (is (= :find (first (q/translate id)))))
   (is (some #(and (seq? %) (= 'not (first %))
                   (= [:movie-companies/note '_] (subvec (second %) 1)))
-            (q/translate "11a" :triplox)))
+            (q/translate "11a")))
   (is (= '(if (<= 1950 ?year) (if (<= ?year 2000) true false) false)
-         (q/expression '(<= 1950 ?year 2000) :triplox))))
+         (q/expression '(<= 1950 ?year 2000)))))
 
 (defn- like? [value pattern]
   (boolean (re-matches (re-pattern (q/like-regex pattern)) value)))
@@ -26,8 +25,3 @@
   (is (like? "(film)" "%(film)%"))
   (is (not (like? "film" "%(film)%")))
   (is (not (like? "prefixFilm" "Film%"))))
-
-(deftest translated-variables-are-portable
-  (doseq [id (keys q/queries)]
-    (is (not-any? #(and (symbol? %) (.contains (str %) "."))
-                  (tree-seq coll? seq (q/translate id :triplox))))))
