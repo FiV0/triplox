@@ -103,10 +103,10 @@
                       (let [{:keys [table table-index tables rows transactions last-tx]} @progress
                             now (System/nanoTime)
                             [then rows-then] @previous
-                            behind (when-let [indexed-tx (:indexed-tx engine)]
+                            behind (when-let [indexed-tx-id (:indexed-tx-id engine)]
                                      (when last-tx
                                        (try (format " indexing %.1f MB behind"
-                                                    (/ (- (:tx-id last-tx) (indexed-tx)) 1e6))
+                                                    (/ (- (:tx-id last-tx) (indexed-tx-id)) 1e6))
                                             (catch Exception _ " indexing lag unknown"))))]
                         (reset! previous [now (or rows 0)])
                         (println (format "progress %.0fs table %s (%s/%s) rows %d (%.0f/s) transactions %d%s"
