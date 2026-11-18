@@ -55,7 +55,7 @@
   (let [directory (.toFile (Files/createTempDirectory "triplox-job-test-"
                                                       (make-array java.nio.file.attribute.FileAttribute 0)))
         baseline (datalevin-baseline directory)
-        triplox (engines/open! {:engine "triplox-incremental"
+        triplox (engines/open! {:engine :triplox-incremental
                                :host (or (System/getenv "TRIPLOX_HOST") "127.0.0.1")
                                :port (Integer/parseInt (or (System/getenv "TRIPLOX_PORT") "5490"))})
         executor (Executors/newSingleThreadExecutor)

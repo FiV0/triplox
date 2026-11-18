@@ -11,12 +11,14 @@
   (let [config (json/read-str (slurp config-file) :key-fn keyword)
         output (:output config)
         measurements (io/file output "measurements.jsonl")
-        config (assoc config :engine-name (:engine config)
+        engine (keyword (:engine config))
+        config (assoc config :engine engine
+                             :engine-name engine
                              :query-ids (queries/selected (:queries config))
                              :measurements measurements)]
     (try
       (let [query-forms (into (sorted-map)
-                              (map (fn [id] [id (if (= "datalevin" (:engine config))
+                              (map (fn [id] [id (if (= :datalevin (:engine config))
                                                   (get queries/queries id)
                                                   (queries/translate id))]))
                               (:query-ids config))

@@ -14,7 +14,7 @@
         database (Object.)
         engine {:db (constantly database)
                 :query (fn [db id] (swap! calls conj [:query id db (Thread/currentThread)]) [[id]])}
-        config {:query-ids ["1a" "2a"] :output "unused" :engine-name "datalevin" :timeout-ms 1000}]
+        config {:query-ids ["1a" "2a"] :output "unused" :engine-name :datalevin :timeout-ms 1000}]
     (try
       (with-redefs [artifacts/append! (fn [_ event] (swap! calls conj [:event event]))
                     artifacts/save-result! (fn [& _] {})]
@@ -38,7 +38,7 @@
         (is (thrown? Exception
                      (runner/warmup! {:db (constantly nil)
                                       :query (fn [& _] (throw (ex-info "failed" {})))}
-                                     executor {:engine-name "datalevin" :query-ids ["1a"]
+                                     executor {:engine-name :datalevin :query-ids ["1a"]
                                                :timeout-ms 1000})))
         (is (not-any? #(= "ok" (:status %)) @events)))
       (finally (.shutdownNow executor)))))
@@ -57,7 +57,7 @@
                   artifacts/append! (fn [& _] (record! :write))
                   artifacts/write-json! (fn [& _] (record! :write))
                   artifacts/save-result! (fn [& _] (record! :write) {})]
-      (runner/run! engine {:engine-name "triplox-incremental" :query-ids ["1a"]
+      (runner/run! engine {:engine-name :triplox-incremental :query-ids ["1a"]
                            :output "unused" :timeout-ms 1000 :catchup-timeout-ms 1000})
       (is (= :await (nth @calls (inc (.indexOf @calls :load))))))))
 
@@ -91,7 +91,7 @@
         (doseq [file (reverse (file-seq directory))] (io/delete-file file))))))
 
 (deftest benchmark-checks-and-saves-only-final-loaded-results
-  (doseq [engine ["datalevin" "triplox-standard" "triplox-incremental"]]
+  (doseq [engine [:datalevin :triplox-standard :triplox-incremental]]
     (with-loaded-run engine (fn [db id] [[id db]])
       (fn [run! directory queries]
         (run!)
@@ -103,13 +103,13 @@
                    (edn/read-string (slurp (io/file answers (str id ".edn")))))))
           (is (every? #(= 3 (first %)) @queries))
           (is (not-any? #(= "refresh" (:phase %)) events))
-          (when (= engine "triplox-incremental")
+          (when (= engine :triplox-incremental)
             (is (= [[3 "1a"] [3 "2a"]] @queries))
             (is (= [{:phase "verification" :queries 2 :status "ok"}]
                    (filter #(= "verification" (:phase %)) events)))))))))
 
 (deftest incremental-mismatch-fails-with-diagnostic-answers
-  (with-loaded-run "triplox-incremental" (fn [_ _] [["wrong"]])
+  (with-loaded-run :triplox-incremental (fn [_ _] [["wrong"]])
     (fn [run! directory _]
       (is (thrown-with-msg? clojure.lang.ExceptionInfo
                            #"Incremental result differs from standard query" (run!)))

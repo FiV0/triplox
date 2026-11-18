@@ -49,7 +49,7 @@
     pass-ms))
 
 (defn warmup! [engine executor {:keys [measurements engine-name] :as config}]
-  (when (= "datalevin" engine-name)
+  (when (= :datalevin engine-name)
     (query-pass! engine executor config false)
     (artifacts/append! measurements
                        {:phase "warmup" :status "ok"
@@ -145,7 +145,7 @@
                            timeout-ms catchup-timeout-ms query-ids]
                     :as config}]
   (let [executor (Executors/newSingleThreadExecutor)
-        incremental? (= engine-name "triplox-incremental")
+        incremental? (= engine-name :triplox-incremental)
         views (atom [])]
     (try
       (bounded executor timeout-ms (:schema! engine))
