@@ -7,8 +7,8 @@
 (defn write-json! [file value]
   (io/make-parents file)
   (spit file (json/write-str value :value-fn (fn [_ value]
-                                             (if (instance? java.time.Instant value)
-                                               (str value) value)))))
+                                               (if (instance? java.time.Instant value)
+                                                 (str value) value)))))
 
 (defn append! [directory event]
   (spit (io/file directory "measurements.jsonl")
@@ -38,8 +38,8 @@
 (defn read-events [directory]
   (let [file (io/file directory "measurements.jsonl")]
     (if-not (.isFile file) []
-      (with-open [reader (io/reader file)]
-        (mapv #(json/read-str % :key-fn keyword) (line-seq reader))))))
+            (with-open [reader (io/reader file)]
+              (mapv #(json/read-str % :key-fn keyword) (line-seq reader))))))
 
 (defn percentile [values fraction]
   (when (seq values)
