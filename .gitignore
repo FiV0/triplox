@@ -6,7 +6,8 @@
 .claude/worktrees
 .worktrees/
 
-.lsp/
+.lsp/*
+!.lsp/config.edn
 .clj-kondo/
 .cpcache/
 .nrepl-port
