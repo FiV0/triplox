@@ -8,7 +8,7 @@
 
 (def schema
   (assoc source/schema :job/id {:db/valueType :db.type/long
-                               :db/unique :db.unique/identity}))
+                                :db/unique :db.unique/identity}))
 
 (defn ref-attribute? [attribute]
   (= :db.type/ref (get-in schema [attribute :db/valueType])))
@@ -100,11 +100,3 @@
         (let [length (.read input buffer)]
           (when (pos? length) (.update digest buffer 0 length) (recur)))))
     (.formatHex (HexFormat/of) (.digest digest))))
-
-(defn dataset-manifest [directory]
-  (mapv (fn [[table]]
-          (let [file (table-file directory table)]
-            (when-not (.isFile file)
-              (throw (ex-info "Missing JOB CSV file" {:file (str file)})))
-            {:table table :bytes (.length file) :sha256 (sha256 file)}))
-        source/tables))

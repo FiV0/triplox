@@ -271,8 +271,6 @@ def run(args):
     print(f"Run artifacts: {root}", flush=True)
     failures = []
     try:
-        if args.command == "run":
-            run_process(dict(base, engine="manifest", output=str(root), **{"state-dir": str(ROOT / "state" / run_id)}))
         for engine in engines:
             output = root / engine
             output.mkdir()

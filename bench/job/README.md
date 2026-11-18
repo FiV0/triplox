@@ -244,7 +244,6 @@ reports with `./job report --runs runs/<run-id>`.
 
 - `manifest.json`: configuration, engine versions, Git revision, dirty status,
   diff hash, benchmark source hashes, JVM and machine details, run status.
-- `dataset.json`: byte sizes and SHA-256 for every source CSV.
 - `<engine>/config.json`, `selection.json`, `queries.edn`: exact workload inputs.
 - `<engine>/measurements.jsonl`: raw phase/query timings and final verification status.
   Successful warmup has no measured durations.
