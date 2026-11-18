@@ -7,9 +7,8 @@
                 "bench/graph/src"
                 "bench/auctionmark/src"
                 "bench/auctionmark/test"
-                "examples/clj/src"
-                "examples/clj/notebooks"
-                "examples/clojure/src"]
+                "examples/clojure/src"
+                "examples/clojure/notebooks"]
  ;; clojure-lsp merges the classpaths of all specs whose project-path exists.
  ;; Published Triplox jars are dropped so xyz.triplox resolves to triplox-jvm only.
  :project-specs [{:project-path "triplox-jvm/deps.edn"
@@ -20,7 +19,5 @@
                   :classpath-cmd ["sh" "-c" "cd bench/graph && clojure -Spath | tr : '\\n' | grep -v /xyz/triplox/triplox/ | paste -sd:"]}
                  {:project-path "bench/auctionmark/deps.edn"
                   :classpath-cmd ["sh" "-c" "cd bench/auctionmark && clojure -Spath -A:test | tr : '\\n' | grep -v /xyz/triplox/triplox/ | paste -sd:"]}
-                 {:project-path "examples/clj/deps.edn"
-                  :classpath-cmd ["sh" "-c" "cd examples/clj && clojure -Spath | tr : '\\n' | grep -v /xyz/triplox/triplox/ | paste -sd:"]}
                  {:project-path "examples/clojure/deps.edn"
                   :classpath-cmd ["sh" "-c" "cd examples/clojure && clojure -Spath | tr : '\\n' | grep -v /xyz/triplox/triplox/ | paste -sd:"]}]}
