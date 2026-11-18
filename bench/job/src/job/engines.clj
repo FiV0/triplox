@@ -49,15 +49,7 @@
                         (throw (ex-info "Triplox transaction rejected" result)))
                       (select-keys result [:tx-id :system-time])))
         await-tx! (fn [tx]
-                    ;; Opening a db as of `tx` waits until `tx` is indexed, but the server
-                    ;; gives up after its own timeout; retry those until the backlog drains.
-                    (let [db (loop []
-                               (let [result (try (triplox/db conn tx)
-                                                 (catch Exception e
-                                                   (if (some-> (ex-message e) (.contains "was not indexed within"))
-                                                     ::not-indexed
-                                                     (throw e))))]
-                                 (if (= ::not-indexed result) (recur) result)))
+                    (let [db (triplox/db conn tx)
                           rejected (triplox/q db '[:find ?tx ?error :where [?tx :db/txError ?error]])]
                       (when (seq rejected)
                         (throw (ex-info "Triplox transactions rejected"
@@ -65,7 +57,7 @@
     {:schema! #(transact! (data/schema-tx))
      :transact! #(triplox/submit-tx conn %)
      :await-tx! await-tx!
-     :indexed-tx #(.txId (.txKey (triplox/db conn)))
+     :indexed-tx-id #(.txId (.txKey (triplox/db conn)))
      :db #(triplox/db conn)
      :query (fn [db id] (triplox/q db (queries/translate id)))
      ;; Every batch sends a delta, empty if unchanged, so a watch on the rows sees each applied tx-key.
