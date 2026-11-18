@@ -1,6 +1,5 @@
 (ns job.artifacts
   (:require [clojure.data.json :as json]
-            [clojure.edn :as edn]
             [clojure.java.io :as io]
             [job.data :as data]
             [job.queries :as queries]))
