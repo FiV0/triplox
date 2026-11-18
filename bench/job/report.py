@@ -29,7 +29,7 @@ def report(root):
         config = read_json(directory / "config.json") if directory.is_dir() else None
         if config is None:
             continue
-        configurations.append({k: config.get(k) for k in ["data-dir", "workload", "queries", "batch-size", "max-bytes", "cycles", "seed", "ingest-only"]})
+        configurations.append({k: config.get(k) for k in ["data-dir", "workload", "queries", "batch-size","cycles", "seed", "ingest-only"]})
         events_file = directory / "measurements.jsonl"
         events = [json.loads(line) for line in events_file.read_text().splitlines()] if events_file.exists() else []
         samples_file = directory / "resources.jsonl"

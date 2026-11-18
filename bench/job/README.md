@@ -161,9 +161,6 @@ Default controls:
 
 - `--batch-size 1000`: maximum source rows per Triplox ingestion transaction.
   Datalevin bulk-loads and ignores it.
-- `--max-bytes 262144`: maximum serialized EDN bytes per Triplox transaction;
-  large batches split deterministically. This is not a wire-byte or datom-count
-  limit.
 - `--heap 4g`: runner JVM heap.
 - `--timeout-ms 600000`: transaction, query, and registration deadlines. Query
   interruption is best effort; the process exits on failure. Waiting for the
@@ -185,8 +182,8 @@ engines load those triples differently:
   portable loader. It stores the offset ID as `:job/id`, a unique-identity
   attribute. Every entity and every reference becomes a tempid, which upserts
   on `:job/id`. The loader adds stubs for references to rows that are not
-  loaded yet. Rows are submitted in batches limited by `--batch-size` and
-  `--max-bytes`.
+  loaded yet. Rows are submitted in transactions of at most `--batch-size`
+  rows.
 
 So the two engines do different loading work, and their load times are not
 comparable. `load.json` counts source rows and attempted datoms. For Triplox,

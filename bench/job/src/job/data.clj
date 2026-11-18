@@ -1,8 +1,7 @@
 (ns job.data
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
-            [job.source :as source])
-  (:import [java.nio.charset StandardCharsets]))
+            [job.source :as source]))
 
 (def schema
   (assoc source/schema :job/id {:db/valueType :db.type/long
@@ -43,41 +42,27 @@
                   row))
           entities)))
 
-(defn encoded-size [value]
-  (alength (.getBytes (pr-str value) StandardCharsets/UTF_8)))
-
-(defn split-batches [rows batch-size max-bytes]
-  (letfn [(split [batch]
-            (if (<= (encoded-size (transaction batch)) max-bytes)
-              [batch]
-              (if (= 1 (count batch))
-                (throw (ex-info "A source row exceeds the transaction byte budget"
-                                {:id (:job/id (first batch)) :max-bytes max-bytes}))
-                (let [[left right] (split-at (quot (count batch) 2) batch)]
-                  (concat (split left) (split right))))))]
-    (mapcat split (partition-all batch-size rows))))
-
 (defn load-data!
-  "Loads every table. `progress`, when given, is an atom reset after each
-  transaction to the table, rows and transactions loaded so far, and the last tx."
-  [directory {:keys [batch-size max-bytes]} transact! & [progress]]
+  "Loads every table, transacting up to `batch-size` source rows at a time.
+  `progress`, when given, is an atom reset after each transaction to the table,
+  rows and transactions loaded so far, and the last tx."
+  [directory {:keys [batch-size]} transact! & [progress]]
   (let [counts (atom {})
         transactions (atom 0)
         datoms (atom 0)
         last-tx (atom nil)]
     (doseq [[[table :as descriptor] index] (map vector source/tables (range))]
       (let [flush! (fn [rows]
-                     (doseq [batch (split-batches rows batch-size max-bytes)]
-                       (let [tx (transaction batch)]
-                         (reset! last-tx (transact! tx))
-                         (swap! transactions inc)
-                         (swap! datoms + (reduce + (map #(dec (count %)) tx)))
-                         (when progress
-                           (reset! progress {:table table :table-index (inc index)
-                                             :tables (count source/tables)
-                                             :rows (reduce + (vals @counts))
-                                             :transactions @transactions
-                                             :last-tx @last-tx})))))
+                     (let [tx (transaction rows)]
+                       (reset! last-tx (transact! tx))
+                       (swap! transactions inc)
+                       (swap! datoms + (reduce + (map #(dec (count %)) tx)))
+                       (when progress
+                         (reset! progress {:table table :table-index (inc index)
+                                           :tables (count source/tables)
+                                           :rows (reduce + (vals @counts))
+                                           :transactions @transactions
+                                           :last-tx @last-tx}))))
             remaining
             (reduce-table
              directory descriptor

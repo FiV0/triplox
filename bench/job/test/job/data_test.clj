@@ -17,13 +17,6 @@
     (is (= [{:db/id "20" :job/id 20 :movie-companies/movie "80" :movie-companies/note "note"}
             {:db/id "80" :job/id 80}] tx))))
 
-(deftest transaction-size-bound
-  (let [rows (mapv #(hash-map :job/id % :title/title (apply str (repeat 100 "a"))) (range 8))
-        batches (data/split-batches rows 8 400)]
-    (is (= rows (vec (mapcat identity batches))))
-    (is (every? #(<= (data/encoded-size (data/transaction %)) 400) batches)))
-  (is (thrown? Exception (doall (data/split-batches [{:job/id 1 :title/title "large"}] 1 1)))))
-
 (deftest source-mapping
   (let [load-title (second (first (filter #(= :title (first %)) source/tables)))]
     (is (= [[80000001 :title/title "Movie"] [80000001 :title/kind 21]
