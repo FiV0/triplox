@@ -7,8 +7,10 @@
   (io/make-parents file)
   (spit file (json/write-str value)))
 
+(def measurements-file-name "measurements.jsonl")
+
 (defn measurements [directory]
-  (io/file directory "measurements.jsonl"))
+  (io/file directory measurements-file-name))
 
 (defn append! [file event]
   (spit file (str (json/write-str event) "\n") :append true))
