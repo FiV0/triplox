@@ -9,9 +9,11 @@
 
 (defn -main [config-file]
   (let [config (json/read-str (slurp config-file) :key-fn keyword)
+        output (:output config)
+        measurements (io/file output "measurements.jsonl")
         config (assoc config :engine-name (:engine config)
-                             :query-ids (queries/selected (:queries config)))
-        output (:output config)]
+                             :query-ids (queries/selected (:queries config))
+                             :measurements measurements)]
     (try
       (let [query-forms (into (sorted-map)
                               (map (fn [id] [id (if (= "datalevin" (:engine config))
@@ -33,7 +35,7 @@
       (System/exit 0)
       (catch Throwable error
         (.printStackTrace error)
-        (artifacts/append! (artifacts/measurements output)
+        (artifacts/append! measurements
                            {:phase "run" :status "failed" :message (.getMessage error)})
         (artifacts/write-json! (io/file output "status.json")
                                {:status "failed" :message (.getMessage error)})

@@ -79,7 +79,8 @@
                                {:rows [[(str view) (:tx-id tx)]] :tx-key tx})
                 :close! (constantly nil)}
         config {:engine-name engine-name :query-ids ["1a" "2a"]
-                :output (str directory) :timeout-ms 1000 :catchup-timeout-ms 1000}]
+                :output (str directory) :measurements (io/file directory "measurements.jsonl")
+                :timeout-ms 1000 :catchup-timeout-ms 1000}]
     (try
       (with-redefs [data/load-data! (fn [_ _ transact! & _]
                                      (transact! [{:step 1}])
@@ -95,7 +96,7 @@
       (fn [run! directory queries]
         (run!)
         (let [answers (io/file directory "answers")
-              events (artifacts/read-events directory)]
+              events (artifacts/read-events (io/file directory "measurements.jsonl"))]
           (is (= ["final"] (vec (.list answers))))
           (doseq [id ["1a" "2a"]]
             (is (= [[id 3]]
@@ -116,4 +117,4 @@
              (edn/read-string (slurp (io/file directory "mismatches" "final" "1a.edn")))))
       (is (some #(and (= "verification" (:phase %)) (= "failed" (:status %))
                       (= "final" (:checkpoint %)))
-                (artifacts/read-events directory))))))
+                (artifacts/read-events (io/file directory "measurements.jsonl")))))))
