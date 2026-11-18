@@ -248,7 +248,7 @@ reports with `./job report --runs runs/<run-id>`.
 - `<engine>/measurements.jsonl`: raw phase/query timings and final verification status.
   Successful warmup has no measured durations.
 - `<engine>/answers/final/<query>.edn`: normalized, sorted final answer sets.
-  Integer types are normalized; measurement events also contain answer hashes.
+  Integer types are normalized.
 - `<engine>/mismatches/final/<query>.edn`: standard and incremental answers
   when their comparison fails.
 - `<engine>/load.json`, `resources.jsonl`, `disk.json`: ingestion counts,

@@ -2,9 +2,7 @@
   (:require [clojure.java.io :as io]
             [clojure.string :as str]
             [job.source :as source])
-  (:import [java.nio.charset StandardCharsets]
-           [java.security MessageDigest]
-           [java.util HexFormat]))
+  (:import [java.nio.charset StandardCharsets]))
 
 (def schema
   (assoc source/schema :job/id {:db/valueType :db.type/long
@@ -91,12 +89,3 @@
         (when (seq remaining) (flush! remaining))))
     {:table-counts @counts :transactions @transactions :attempted-datoms @datoms
      :last-tx @last-tx}))
-
-(defn sha256 [file]
-  (let [digest (MessageDigest/getInstance "SHA-256")
-        buffer (byte-array 65536)]
-    (with-open [input (io/input-stream file)]
-      (loop []
-        (let [length (.read input buffer)]
-          (when (pos? length) (.update digest buffer 0 length) (recur)))))
-    (.formatHex (HexFormat/of) (.digest digest))))

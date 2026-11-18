@@ -1,7 +1,6 @@
 (ns job.artifacts
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
-            [job.data :as data]
             [job.queries :as queries]))
 
 (defn write-json! [file value]
@@ -26,7 +25,7 @@
         file (io/file directory "answers" (str checkpoint) (str id ".edn"))]
     (io/make-parents file)
     (spit file (pr-str rows))
-    {:rows (count rows) :sha256 (data/sha256 file)}))
+    {:rows (count rows)}))
 
 (defn verify-expected [directory id rows]
   (when-not (= (normalized (get queries/expected id)) (normalized rows))
