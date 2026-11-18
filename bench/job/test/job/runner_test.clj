@@ -43,11 +43,6 @@
         (is (not-any? #(= "ok" (:status %)) @events)))
       (finally (.shutdownNow executor)))))
 
-(deftest percentile-nearest-rank
-  (is (= 2 (artifacts/percentile [1 2 3 4] 0.5)))
-  (is (= 4 (artifacts/percentile [1 2 3 4] 0.95)))
-  (is (nil? (artifacts/percentile [] 0.95))))
-
 (deftest ingestion-and-catchup-have-no-artifact-io-between-them
   (let [calls (atom [])
         record! #(swap! calls conj %)

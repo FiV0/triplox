@@ -40,9 +40,3 @@
     (if-not (.isFile file) []
             (with-open [reader (io/reader file)]
               (mapv #(json/read-str % :key-fn keyword) (line-seq reader))))))
-
-(defn percentile [values fraction]
-  (when (seq values)
-    (let [values (vec (sort values))]
-      (nth values (min (dec (count values))
-                       (max 0 (dec (long (Math/ceil (* fraction (count values)))))))))))
