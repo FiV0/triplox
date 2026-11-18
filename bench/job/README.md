@@ -66,7 +66,7 @@ repository root (`cargo run -- config/triplox-dev.toml`) and run from this
 directory:
 
 ```bash
-clojure -M:datalevin:integration-test
+clojure -M:integration-test
 ```
 
 Run `./job test` first to compile the Java sources. Set `TRIPLOX_HOST` and
@@ -107,13 +107,14 @@ the benchmark always uses this checkout's client. `build.clj` compiles the
 client's Java sources and `java/job/CSVReader.java` into `classes/`.
 
 - `clojure -T:build javac` compiles the Java sources only.
-- `clojure -M:datalevin:dev` starts an nREPL server on a random free port and
+- `clojure -M:dev` starts an nREPL server on a random free port and
   writes the port to `.nrepl-port` (add `--port <n>` to pick one). No build step
   is needed first: load `build.clj` and evaluate `(javac nil)` from its comment
   block before you use `job.source` or the client.
 - `clojure -T:build uber` builds `target/job.jar`. `./job prepare` and `./job run`
   build it, and `./job run` starts each engine with `java -jar target/job.jar`.
-  The jar manifest carries Datalevin's `--add-opens` flags.
+  The jar manifest carries Datalevin's `--add-opens` flags; the `:test`,
+  `:integration-test` and `:dev` aliases read them from `datalevin.jvmopts`.
 - `clojure -T:build clean` deletes `target/`.
 
 ## What is measured
