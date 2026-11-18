@@ -4,6 +4,13 @@
             [clojure.string :as str]
             [job.job-queries :as job-queries]))
 
+;; Datalevin has a more expressive predicate language. For example
+;;
+;; [(and (< ?a ?b) (< ?c 10))]
+;;
+;; this namespace translates the more expressive language into queries
+;; Triplox supports.
+
 (def queries job-queries/queries)
 (def expected (edn/read-string (slurp (io/resource "job/expected.edn"))))
 
@@ -17,7 +24,11 @@
       (throw (ex-info "Unknown JOB query selection" {:selection selection})))
     (vec (sort-by query-order (distinct ids)))))
 
-(defn like-regex [pattern]
+(defn like-regex
+  "Translates a SQL LIKE pattern into an anchored, dot-all regex string:
+  `%` becomes `.*`, `_` becomes `.`, and regex metacharacters are escaped.
+  `\\A`/`\\z` force a whole-value match; LIKE's ESCAPE clause is not supported."
+  [pattern]
   (str "(?s)\\A"
        (apply str (map #(case % \% ".*" \_ "."
                              (if (str/includes? "\\.^$|?*+()[]{}" (str %))
@@ -45,10 +56,8 @@
         (boolean-chain 'and (map #(apply list op %) (partition 2 1 args)))
         :else (apply list op args)))))
 
-(defn translate [id]
-  (let [query (get queries id)
-        [find-part [_ & clauses]] (split-with #(not= :where %) query)]
-    (when-not query (throw (ex-info "Unknown query" {:id id})))
+(defn translate-query [query]
+  (let [[find-part [_ & clauses]] (split-with #(not= :where %) query)]
     (into (vec (concat find-part [:where]))
           (map (fn [clause]
                  (if (and (vector? clause) (seq? (first clause)))
@@ -58,3 +67,8 @@
                        [(expression (first clause))]))
                    clause)))
           clauses)))
+
+(defn translate [id]
+  (let [query (get queries id)]
+    (when-not query (throw (ex-info "Unknown query" {:id id})))
+    (translate-query query)))
