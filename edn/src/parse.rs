@@ -137,7 +137,7 @@ peg::parser! {
         // Keywords follow the rules of symbols, except they can (and must) begin with :
         // e.g. :fred or :my/fred. See https://github.com/edn-format/edn#keywords
         rule symbol_char_initial() = ['a'..='z' | 'A'..='Z' | '0'..='9' | '*' | '!' | '_' | '?' | '$' | '%' | '&' | '=' | '<' | '>']
-        rule symbol_char_subsequent() = ['+' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '*' | '!' | '_' | '?' | '$' | '%' | '&' | '=' | '<' | '>' | '-']
+        rule symbol_char_subsequent() = ['+' | 'a'..='z' | 'A'..='Z' | '0'..='9' | '*' | '!' | '_' | '?' | '$' | '%' | '&' | '=' | '<' | '>' | '-' | '.']
 
         rule symbol_namespace() = symbol_char_initial() symbol_char_subsequent()* (namespace_divider() symbol_char_subsequent()+)*
         rule symbol_name() = ( symbol_char_initial()+ symbol_char_subsequent()* )

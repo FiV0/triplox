@@ -445,6 +445,11 @@ fn test_symbol() {
     assert_eq!(symbol("hello").unwrap(), s_plain("hello"));
     assert_eq!(symbol("foo-bar").unwrap(), s_plain("foo-bar"));
     assert_eq!(symbol("foo_bar").unwrap(), s_plain("foo_bar"));
+
+    assert_eq!(symbol("?e.foo").unwrap(), s_plain("?e.foo"));
+    assert_eq!(symbol("a.b").unwrap(), s_plain("a.b"));
+    assert_eq!(symbol("a.b.c/d.e").unwrap(), s_ns("a.b.c", "d.e"));
+    assert_eq!(value("?e.foo").unwrap(), s_plain("?e.foo"));
 }
 
 #[test]
