@@ -21,7 +21,8 @@ def report(root):
     if manifest is None:
         raise ValueError("Missing run manifest")
     format_version = manifest.get("format-version", 1)
-    answer_checkpoint = "final" if format_version >= 3 else "initial"
+    # Format 4 dropped checkpoints: answers sit directly under answers/ and events have no checkpoint.
+    answer_checkpoint = None if format_version >= 4 else "final" if format_version >= 3 else "initial"
     summaries, queries, answers, mismatches, problems = [], [], {}, [], []
     configurations = []
     incremental_verified = False
@@ -36,7 +37,7 @@ def report(root):
         resources = [json.loads(line) for line in samples_file.read_text().splitlines()] if samples_file.exists() else []
         refreshes = [e for e in events if e["phase"] == "refresh" and e["status"] == "ok"]
         first = next((e for e in events if e["phase"] == "initial"), {})
-        initial_queries = next((e for e in events if e["phase"] == "query-pass" and e["checkpoint"] == answer_checkpoint), {})
+        initial_queries = next((e for e in events if e["phase"] == "query-pass" and e.get("checkpoint") == answer_checkpoint), {})
         ingestion = next((e for e in events if e["phase"] == "ingestion"), {})
         ingest_only = config.get("ingest-only", False)
         warmed = any(e["phase"] == "warmup" and e["status"] == "ok" for e in events)
@@ -64,9 +65,10 @@ def report(root):
             if format_version < 3 and config.get("workload") == "maintenance":
                 checkpoints += (["final"] if format_version >= 2 else
                                 [f"batch-{n}" for n in range(trace.get("batches", 0))])
-            required = {f"{checkpoint}/{query}.edn" for checkpoint in checkpoints for query in selected}
+            required = {f"{query}.edn" if checkpoint is None else f"{checkpoint}/{query}.edn"
+                        for checkpoint in checkpoints for query in selected}
             if set(answers[directory.name]) != required:
-                problems.append(f"{directory.name}: missing or unexpected checkpoint answers")
+                problems.append(f"{directory.name}: missing or unexpected answers")
             if format_version < 3 and config.get("workload") == "maintenance" and (not trace or len(refreshes) != trace.get("batches")):
                 problems.append(f"{directory.name}: incomplete maintenance trace")
             if directory.name == "datalevin" and not warmed:
@@ -74,7 +76,7 @@ def report(root):
             if not first and not initial_queries:
                 problems.append(f"{directory.name}: measurement missing")
             if directory.name == "triplox-incremental" and format_version >= 2:
-                verified = {e["checkpoint"] for e in events if e["phase"] == "verification"
+                verified = {e.get("checkpoint") for e in events if e["phase"] == "verification"
                             and e["status"] == "ok" and e.get("queries") == len(selected)}
                 incremental_verified = set(checkpoints) <= verified and summaries[-1]["status"] == "ok"
                 if not incremental_verified:

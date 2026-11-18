@@ -254,7 +254,7 @@ def run(args):
                  "verify-expected": not (Path(args.data_dir) / "fixture.json").exists()})
     files = [p for p in ROOT.rglob("*") if p.is_file() and "__pycache__" not in p.parts and
              p.relative_to(ROOT).parts[0] not in {"runs", "state", "data", "downloads", "disks.d", "target", "classes", "__pycache__", ".cpcache"}]
-    manifest = {"format-version": 3, "run-id": run_id, "config": base,
+    manifest = {"format-version": 4, "run-id": run_id, "config": base,
                 "git-revision": capture(["git", "rev-parse", "HEAD"]),
                 "git-status": capture(["git", "status", "--short"]),
                 "tracked-diff-sha256": hashlib.sha256(capture(["git", "diff", "HEAD"]).encode()).hexdigest(),

@@ -97,16 +97,16 @@
         (run!)
         (let [answers (io/file directory "answers")
               events (artifacts/read-events (io/file directory "measurements.jsonl"))]
-          (is (= ["final"] (vec (.list answers))))
+          (is (= #{"1a.edn" "2a.edn"} (set (.list answers))))
           (doseq [id ["1a" "2a"]]
             (is (= [[id 3]]
-                   (edn/read-string (slurp (io/file answers "final" (str id ".edn")))))))
+                   (edn/read-string (slurp (io/file answers (str id ".edn")))))))
           (is (every? #(= 3 (first %)) @queries))
           (is (not-any? #(= "refresh" (:phase %)) events))
           (when (= engine "triplox-incremental")
             (is (= [[3 "1a"] [3 "2a"]] @queries))
-            (is (= ["final"]
-                   (mapv :checkpoint (filter #(= "verification" (:phase %)) events))))))))))
+            (is (= [{:phase "verification" :queries 2 :status "ok"}]
+                   (filter #(= "verification" (:phase %)) events)))))))))
 
 (deftest incremental-mismatch-fails-with-diagnostic-answers
   (with-loaded-run "triplox-incremental" (fn [_ _] [["wrong"]])
@@ -114,7 +114,6 @@
       (is (thrown-with-msg? clojure.lang.ExceptionInfo
                            #"Incremental result differs from standard query" (run!)))
       (is (= {:standard [["wrong"]] :incremental [["1a" 3]]}
-             (edn/read-string (slurp (io/file directory "mismatches" "final" "1a.edn")))))
-      (is (some #(and (= "verification" (:phase %)) (= "failed" (:status %))
-                      (= "final" (:checkpoint %)))
+             (edn/read-string (slurp (io/file directory "mismatches" "1a.edn")))))
+      (is (some #(and (= "verification" (:phase %)) (= "failed" (:status %)))
                 (artifacts/read-events (io/file directory "measurements.jsonl")))))))

@@ -154,7 +154,7 @@ outside the measured time, with no concurrent writes. A mismatch fails the run
 and saves both answers for diagnosis. This also runs with
 `--engine triplox-incremental` alone.
 
-Answers are saved once, under `answers/final/`. The benchmark ends there;
+Answers are saved once, under `answers/`. The benchmark ends there;
 it does not delete, restore, or modify data to test incremental maintenance.
 
 Default controls:
@@ -244,10 +244,11 @@ reports with `./job report --runs runs/<run-id>`.
 - `<engine>/config.json`, `selection.json`, `queries.edn`: exact workload inputs.
 - `<engine>/measurements.jsonl`: raw phase/query timings and final verification status.
   Successful warmup has no measured durations.
-- `<engine>/answers/final/<query>.edn`: normalized, sorted final answer sets.
+- `<engine>/answers/<query>.edn`: normalized, sorted final answer sets.
   Integer types are normalized.
-- `<engine>/mismatches/final/<query>.edn`: standard and incremental answers
-  when their comparison fails.
+- `<engine>/mismatches/<query>.edn`: standard and incremental answers when
+  their comparison fails, or expected and actual answers when a result differs
+  from the upstream expected answer.
 - `<engine>/load.json`, `resources.jsonl`, `disk.json`: ingestion counts,
   sampled process RSS/container statistics, and persisted state size.
   Container runs also include `containers.json` and `container-disk.json`.
@@ -263,7 +264,7 @@ configurations, differing/missing answers, or missing
 standard-query verification for incremental runs. A single engine run can
 check the original expected answers; an incremental run also checks standard
 Triplox queries, but neither establishes cross-engine parity on its own.
-Ingestion-only reports explicitly omit query verification. Older format-1 and format-2
+Ingestion-only reports explicitly omit query verification. Older format-1 to format-3
 runs remain reportable using their original saved checkpoints.
 Do not combine a failed/partial run into a full-suite performance score.
 

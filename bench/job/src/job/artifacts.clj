@@ -17,9 +17,9 @@
        (sort-by pr-str)
        vec))
 
-(defn save-result! [directory checkpoint id rows]
+(defn save-result! [directory id rows]
   (let [rows (normalized rows)
-        file (io/file directory "answers" (str checkpoint) (str id ".edn"))]
+        file (io/file directory "answers" (str id ".edn"))]
     (io/make-parents file)
     (spit file (pr-str rows))
     {:rows (count rows)}))

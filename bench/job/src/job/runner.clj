@@ -18,13 +18,12 @@
 
 (defn- query-pass! [engine executor config measured?]
   (let [{:keys [query-ids output measurements timeout-ms verify-expected]} config
-        checkpoint (if measured? "final" "warmup")
         pass-start (when measured? (System/nanoTime))
         db ((:db engine))
         results
         (try
           (mapv (fn [id]
-                  (println (if measured? "measure" "warmup") checkpoint id)
+                  (println (if measured? "measure" "warmup") id)
                   (let [start (when measured? (System/nanoTime))]
                     (try
                       (let [rows (bounded executor timeout-ms #((:query engine) db id))]
@@ -32,22 +31,21 @@
                       (catch Throwable error
                         (artifacts/append! measurements
                                            {:phase (if measured? "query" "warmup")
-                                            :checkpoint checkpoint :query id :status "failed"
+                                            :query id :status "failed"
                                             :message (.getMessage error)})
                         (throw error))))) query-ids)
           (finally (when-let [close (:close-db! engine)] (close db))))
         pass-ms (when measured? (milliseconds pass-start))]
     (when measured?
       (doseq [[id rows elapsed] results]
-        (let [answer (artifacts/save-result! output "final" id rows)]
+        (let [answer (artifacts/save-result! output id rows)]
           (artifacts/append! measurements
-                             (merge {:phase "query" :checkpoint checkpoint :query id
+                             (merge {:phase "query" :query id
                                      :elapsed-ms elapsed :status "ok"} answer)))
         (when verify-expected
           (artifacts/verify-expected output id rows)))
       (artifacts/append! measurements
-                         {:phase "query-pass" :checkpoint checkpoint
-                          :elapsed-ms pass-ms :status "ok"}))
+                         {:phase "query-pass" :elapsed-ms pass-ms :status "ok"}))
     pass-ms))
 
 (defn warmup! [engine executor {:keys [measurements engine-name] :as config}]
@@ -63,7 +61,7 @@
             (let [remaining (max 0 (quot (- deadline (System/nanoTime)) 1000000))]
               [id ((:await-view! engine) view tx remaining)])) views)))
 
-(defn- verify-views! [engine executor {:keys [output measurements timeout-ms]} checkpoint snapshots]
+(defn- verify-views! [engine executor {:keys [output measurements timeout-ms]} snapshots]
   (let [db ((:db engine))]
     (try
       (doseq [[id {:keys [rows]}] snapshots]
@@ -71,24 +69,22 @@
                         (bounded executor timeout-ms #((:query engine) db id)))
               incremental (artifacts/normalized rows)]
           (when-not (= standard incremental)
-            (let [file (io/file output "mismatches" checkpoint (str id ".edn"))]
+            (let [file (io/file output "mismatches" (str id ".edn"))]
               (io/make-parents file)
               (spit file (pr-str {:standard standard :incremental incremental})))
             (artifacts/append! measurements
-                               {:phase "verification" :checkpoint checkpoint
-                                :query id :status "failed"})
+                               {:phase "verification" :query id :status "failed"})
             (throw (ex-info "Incremental result differs from standard query"
-                            {:query id :checkpoint checkpoint})))))
+                            {:query id})))))
       (artifacts/append! measurements
-                         {:phase "verification" :checkpoint checkpoint
-                          :queries (count snapshots) :status "ok"})
+                         {:phase "verification" :queries (count snapshots) :status "ok"})
       (finally (when-let [close (:close-db! engine)] (close db))))))
 
-(defn- save-views! [{:keys [output measurements verify-expected]} checkpoint snapshots]
+(defn- save-views! [{:keys [output measurements verify-expected]} snapshots]
   (doseq [[id {:keys [rows tx-key]}] snapshots]
-    (let [answer (artifacts/save-result! output checkpoint id rows)]
+    (let [answer (artifacts/save-result! output id rows)]
       (artifacts/append! measurements
-                         (merge {:phase "view" :checkpoint checkpoint :query id
+                         (merge {:phase "view" :query id
                                  :applied-tx-id (:tx-id tx-key) :status "ok"} answer)))
     (when verify-expected
       (artifacts/verify-expected output id rows))))
@@ -179,8 +175,8 @@
                                {:phase "initial" :status "ok" :ingestion-ms ingestion-ms
                                 :catchup-ms catchup-ms :elapsed-ms initial-ms
                                 :final-tx-id (:tx-id tx)})
-            (verify-views! engine executor config "final" snapshots)
-            (save-views! config "final" snapshots))
+            (verify-views! engine executor config snapshots)
+            (save-views! config snapshots))
           (do (warmup! engine executor config)
               (query-pass! engine executor config true))))
       (finally
