@@ -19,6 +19,9 @@
 (defn table-file [directory table]
   (io/file directory (str (str/replace (name table) "-" "_") ".csv")))
 
+;; It is worth noting that the job/id is unique in the JOB Benchmark. That is the reason
+;; we can go upsert against :job/id and use the string of it as a unique tempid identifier.
+
 (defn reduce-table [directory [table read-triples] f initial]
   (with-open [reader (io/reader (table-file directory table) :encoding "UTF-8")]
     (reduce (fn [state triples]
@@ -37,8 +40,9 @@
                          entities references)]
     (mapv (fn [[id row]]
             (into {:db/id (str id)}
-                  (map (fn [[attribute value]]
-                         [attribute (if (ref-attribute? attribute) (str value) value)]))
+                  ;; The idea here is that an id will get unified with the tempid for the job/id that gets
+                  ;; upserted in the same transaction.
+                  (map (fn [[attribute value]] [attribute (if (ref-attribute? attribute) (str value) value)]))
                   row))
           entities)))
 
@@ -58,19 +62,21 @@
                        (swap! transactions inc)
                        (swap! datoms + (reduce + (map #(dec (count %)) tx)))
                        (when progress
-                         (reset! progress {:table table :table-index (inc index)
+                         (reset! progress {:table table
+                                           :table-index (inc index)
                                            :tables (count source/tables)
                                            :rows (reduce + (vals @counts))
                                            :transactions @transactions
                                            :last-tx @last-tx}))))
-            remaining
-            (reduce-table
-             directory descriptor
-             (fn [pending row]
-               (swap! counts update table (fnil inc 0))
-               (let [pending (conj pending row)]
-                 (if (= batch-size (count pending))
-                   (do (flush! pending) []) pending))) [])]
-        (when (seq remaining) (flush! remaining))))
+            remaining (reduce-table directory descriptor
+                                    (fn [pending row]
+                                      (swap! counts update table (fnil inc 0))
+                                      (let [pending (conj pending row)]
+                                        (if (= batch-size (count pending))
+                                          (do (flush! pending) []) pending)))
+                                    [])]
+
+        (when (seq remaining)
+          (flush! remaining))))
     {:table-counts @counts :transactions @transactions :attempted-datoms @datoms
      :last-tx @last-tx}))
