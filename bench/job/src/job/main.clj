@@ -38,7 +38,8 @@
       (System/exit 0)
       (catch Throwable error
         (.printStackTrace error)
-        (artifacts/append! output {:phase "run" :status "failed" :message (.getMessage error)})
+        (artifacts/append! (artifacts/measurements output)
+                           {:phase "run" :status "failed" :message (.getMessage error)})
         (artifacts/write-json! (io/file output "status.json")
                                {:status "failed" :message (.getMessage error)})
         (shutdown-agents)

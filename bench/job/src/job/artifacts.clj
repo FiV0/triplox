@@ -6,13 +6,13 @@
 
 (defn write-json! [file value]
   (io/make-parents file)
-  (spit file (json/write-str value :value-fn (fn [_ value]
-                                               (if (instance? java.time.Instant value)
-                                                 (str value) value)))))
+  (spit file (json/write-str value)))
 
-(defn append! [directory event]
-  (spit (io/file directory "measurements.jsonl")
-        (str (json/write-str event) "\n") :append true))
+(defn measurements [directory]
+  (io/file directory "measurements.jsonl"))
+
+(defn append! [file event]
+  (spit file (str (json/write-str event) "\n") :append true))
 
 (defn normalized [rows]
   (->> rows
@@ -28,7 +28,7 @@
     (spit file (pr-str rows))
     {:rows (count rows) :sha256 (data/sha256 file)}))
 
-(defn verify-upstream! [directory id rows]
+(defn verify-expected [directory id rows]
   (when-not (= (normalized (get queries/expected id)) (normalized rows))
     (let [file (io/file directory "mismatches" (str id ".edn"))]
       (io/make-parents file)
@@ -36,7 +36,7 @@
     (throw (ex-info "JOB result differs from upstream expected answer" {:query id}))))
 
 (defn read-events [directory]
-  (let [file (io/file directory "measurements.jsonl")]
+  (let [file (measurements directory)]
     (if-not (.isFile file) []
             (with-open [reader (io/reader file)]
               (mapv #(json/read-str % :key-fn keyword) (line-seq reader))))))
