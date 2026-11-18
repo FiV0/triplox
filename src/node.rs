@@ -35,7 +35,8 @@ pub use triplox_client::node::{
 pub use triplox_client::transaction::{TransactionResult, TxKey};
 
 const DEFAULT_LOCAL_CDC_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const DB_AS_OF_INDEXING_TIMEOUT: Duration = Duration::from_secs(30);
+// Quasi infinite: tokio maps an overflowing deadline to a far-future one.
+const DB_AS_OF_INDEXING_TIMEOUT: Duration = Duration::MAX;
 
 pub struct Node<L: TxLog> {
     log: Arc<L>,
