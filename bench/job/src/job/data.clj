@@ -22,13 +22,15 @@
 ;; It is worth noting that the job/id is unique in the JOB Benchmark. That is the reason
 ;; we can go upsert against :job/id and use the string of it as a unique tempid identifier.
 
-(defn reduce-table [directory [table read-triples] f initial]
+(defn- entity [triples]
+  (into {:job/id (ffirst triples)}
+        (map (fn [[_ attribute value]] [attribute value]))
+        triples))
+
+(defn reduce-table [directory [table read-triples] xform f init]
   (with-open [reader (io/reader (table-file directory table) :encoding "UTF-8")]
-    (reduce (fn [state triples]
-              (f state (into {:job/id (ffirst triples)}
-                             (map (fn [[_ attribute value]] [attribute value]))
-                             triples)))
-            initial (partition-by first (read-triples reader)))))
+    (transduce (comp (partition-by first) (map entity) xform)
+               (completing f) init (read-triples reader))))
 
 (defn transaction [rows]
   (let [entities (into (sorted-map) (map (juxt :job/id identity)) rows)
@@ -51,32 +53,25 @@
   `progress`, when given, is an atom reset after each transaction to the table,
   rows and transactions loaded so far, and the last tx."
   [directory {:keys [batch-size]} transact! & [progress]]
-  (let [counts (atom {})
-        transactions (atom 0)
-        datoms (atom 0)
-        last-tx (atom nil)]
-    (doseq [[[table :as descriptor] index] (map vector source/tables (range))]
-      (let [flush! (fn [rows]
-                     (let [tx (transaction rows)]
-                       (reset! last-tx (transact! tx))
-                       (swap! transactions inc)
-                       (swap! datoms + (reduce + (map #(dec (count %)) tx)))
-                       (when progress
-                         (reset! progress {:table table
-                                           :table-index (inc index)
-                                           :tables (count source/tables)
-                                           :rows (reduce + (vals @counts))
-                                           :transactions @transactions
-                                           :last-tx @last-tx}))))
-            remaining (reduce-table directory descriptor
-                                    (fn [pending row]
-                                      (swap! counts update table (fnil inc 0))
-                                      (let [pending (conj pending row)]
-                                        (if (= batch-size (count pending))
-                                          (do (flush! pending) []) pending)))
-                                    [])]
-
-        (when (seq remaining)
-          (flush! remaining))))
-    {:table-counts @counts :transactions @transactions :attempted-datoms @datoms
-     :last-tx @last-tx}))
+  (reduce
+   (fn [stats [index [table :as descriptor]]]
+     (reduce-table
+      directory descriptor (partition-all batch-size)
+      (fn [stats rows]
+        (let [tx (transaction rows)
+              stats (-> stats
+                        (update-in [:table-counts table] (fnil + 0) (count rows))
+                        (update :transactions inc)
+                        (update :attempted-datoms + (transduce (map #(dec (count %))) + tx))
+                        (assoc :last-tx (transact! tx)))]
+          (when progress
+            (reset! progress {:table table
+                              :table-index (inc index)
+                              :tables (count source/tables)
+                              :rows (reduce + (vals (:table-counts stats)))
+                              :transactions (:transactions stats)
+                              :last-tx (:last-tx stats)}))
+          stats))
+      stats))
+   {:table-counts {} :transactions 0 :attempted-datoms 0 :last-tx nil}
+   (map-indexed vector source/tables)))
