@@ -106,9 +106,10 @@ The Triplox client is a `:local/root` dependency on `../../triplox-jvm`, so
 the benchmark always uses this checkout's client. `build.clj` compiles the
 client's Java sources and `java/job/CSVReader.java` into `classes/`.
 
-- `clojure -M:datalevin:dev` starts an nREPL server on port 7888 (add `--port <n>`
-  to change it). No build step is needed first: load `build.clj` and evaluate
-  `(javac nil)` from its comment block before you use `job.source` or the client.
+- `clojure -M:datalevin:dev` starts an nREPL server on a random free port and
+  writes the port to `.nrepl-port` (add `--port <n>` to pick one). No build step
+  is needed first: load `build.clj` and evaluate `(javac nil)` from its comment
+  block before you use `job.source` or the client.
 - `clojure -T:build javac` compiles the Java sources only.
 - `clojure -T:build uber` builds `target/job.jar`. `./job prepare` and `./job run`
   build it, and `./job run` starts each engine with `java -jar target/job.jar`.
