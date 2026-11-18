@@ -3,7 +3,7 @@
 .idea
 
 .claude-worktrees/
-.claude/worktrees
+.claude/*
 .worktrees/
 
 .lsp/*
