@@ -37,8 +37,8 @@
                   {:table-counts @counts :attempted-datoms @datoms}))]
     {:schema! (constantly nil)
      :load! load!
-     :db #(deref db)
-     :query (fn [db id] (mapv vec (d/q (get queries/queries id) db)))
+     :db-fn #(deref db)
+     :query-fn (fn [db id] (mapv vec (d/q (get queries/queries id) db)))
      :close! #(d/close-db @db)}))
 
 (defn- triplox [{:keys [host port]}]
@@ -57,9 +57,9 @@
     {:schema! #(transact! (data/schema-tx))
      :transact! #(triplox/submit-tx conn %)
      :await-tx! await-tx!
-     :indexed-tx-id #(.txId (.txKey (triplox/db conn)))
-     :db #(triplox/db conn)
-     :query (fn [db id] (triplox/q db (queries/translate id)))
+     :indexed-tx-id-fn #(.txId (.txKey (triplox/db conn)))
+     :db-fn #(triplox/db conn)
+     :query-fn (fn [db id] (triplox/q db (queries/translate id)))
      ;; Every batch sends a delta, empty if unchanged, so a watch on the rows sees each applied tx-key.
      :view! (fn [id]
               (let [v (view/->view conn (queries/translate id))

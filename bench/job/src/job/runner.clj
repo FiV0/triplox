@@ -19,14 +19,14 @@
 (defn- query-pass! [engine executor config measured?]
   (let [{:keys [query-ids output measurements timeout-ms verify-expected]} config
         pass-start (when measured? (System/nanoTime))
-        db ((:db engine))
+        db ((:db-fn engine))
         results
         (try
           (mapv (fn [id]
                   (println (if measured? "measure" "warmup") id)
                   (let [start (when measured? (System/nanoTime))]
                     (try
-                      (let [rows (bounded executor timeout-ms #((:query engine) db id))]
+                      (let [rows (bounded executor timeout-ms #((:query-fn engine) db id))]
                         [id rows (when measured? (milliseconds start))])
                       (catch Throwable error
                         (artifacts/append! measurements
@@ -62,11 +62,11 @@
               [id ((:await-view! engine) view tx remaining)])) views)))
 
 (defn- verify-views! [engine executor {:keys [output measurements timeout-ms]} snapshots]
-  (let [db ((:db engine))]
+  (let [db ((:db-fn engine))]
     (try
       (doseq [[id {:keys [rows]}] snapshots]
         (let [standard (artifacts/normalized
-                        (bounded executor timeout-ms #((:query engine) db id)))
+                        (bounded executor timeout-ms #((:query-fn engine) db id)))
               incremental (artifacts/normalized rows)]
           (when-not (= standard incremental)
             (let [file (io/file output "mismatches" (str id ".edn"))]
@@ -103,7 +103,8 @@
                       (let [{:keys [table table-index tables rows transactions last-tx]} @progress
                             now (System/nanoTime)
                             [then rows-then] @previous
-                            behind (when-let [indexed-tx-id (:indexed-tx-id engine)]
+                            ;; MB only holds for a file log (tx ids are byte offsets); memory and Kafka tx ids count records.
+                            behind (when-let [indexed-tx-id (:indexed-tx-id-fn engine)]
                                      (when last-tx
                                        (try (format " indexing %.1f MB behind"
                                                     (/ (- (:tx-id last-tx) (indexed-tx-id)) 1e6))
@@ -141,9 +142,7 @@
           loaded))
       (finally (.interrupt ^Thread reporter)))))
 
-(defn run! [engine {:keys [engine-name output measurements data-dir
-                           timeout-ms catchup-timeout-ms query-ids]
-                    :as config}]
+(defn run! [engine {:keys [engine-name output measurements timeout-ms catchup-timeout-ms query-ids] :as config}]
   (let [executor (Executors/newSingleThreadExecutor)
         incremental? (= engine-name :triplox-incremental)
         views (atom [])]

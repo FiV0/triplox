@@ -12,8 +12,8 @@
   (let [calls (atom [])
         executor (Executors/newSingleThreadExecutor)
         database (Object.)
-        engine {:db (constantly database)
-                :query (fn [db id] (swap! calls conj [:query id db (Thread/currentThread)]) [[id]])}
+        engine {:db-fn (constantly database)
+                :query-fn (fn [db id] (swap! calls conj [:query id db (Thread/currentThread)]) [[id]])}
         config {:query-ids ["1a" "2a"] :output "unused" :engine-name :datalevin :timeout-ms 1000}]
     (try
       (with-redefs [artifacts/append! (fn [_ event] (swap! calls conj [:event event]))
@@ -36,8 +36,8 @@
     (try
       (with-redefs [artifacts/append! (fn [_ event] (swap! events conj event))]
         (is (thrown? Exception
-                     (runner/warmup! {:db (constantly nil)
-                                      :query (fn [& _] (throw (ex-info "failed" {})))}
+                     (runner/warmup! {:db-fn (constantly nil)
+                                      :query-fn (fn [& _] (throw (ex-info "failed" {})))}
                                      executor {:engine-name :datalevin :query-ids ["1a"]
                                                :timeout-ms 1000})))
         (is (not-any? #(= "ok" (:status %)) @events)))
@@ -46,8 +46,8 @@
 (deftest ingestion-and-catchup-have-no-artifact-io-between-them
   (let [calls (atom [])
         record! #(swap! calls conj %)
-        engine {:db (constantly nil)
-                :query (fn [& _] [])
+        engine {:db-fn (constantly nil)
+                :query-fn (fn [& _] [])
                 :schema! #(record! :schema)
                 :view! (fn [_] (reify java.lang.AutoCloseable (close [_])))
                 :await-view! (fn [_ tx _] (record! :await) {:rows [] :tx-key tx})
@@ -68,8 +68,8 @@
         queries (atom [])
         engine {:schema! (constantly nil)
                 :transact! (fn [tx] {:tx-id (reset! current (:step (first tx)))})
-                :db #(deref current)
-                :query (fn [db id] (swap! queries conj [db id]) (standard-rows db id))
+                :db-fn #(deref current)
+                :query-fn (fn [db id] (swap! queries conj [db id]) (standard-rows db id))
                 :view! (fn [id]
                          (reify java.lang.AutoCloseable
                            (close [_])

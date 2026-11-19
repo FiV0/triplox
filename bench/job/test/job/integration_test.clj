@@ -29,21 +29,21 @@
   (let [conn (d/get-conn (str (io/file directory "database")) data/schema)]
     {:schema! (constantly nil)
      :transact! (fn [tx] (d/transact! conn tx) nil)
-     :db #(deref conn)
-     :query (fn [db id] (mapv vec (d/q (get queries/queries id) db)))
+     :db-fn #(deref conn)
+     :query-fn (fn [db id] (mapv vec (d/q (get queries/queries id) db)))
      :close! #(d/close conn)}))
 
 (def matching-answer [["Film Company" "follows" "Money Movie"]])
 
 (defn- check-queries! [baseline triplox views tx executor expected-11b]
-  (let [baseline-db ((:db baseline))
-        triplox-db ((:db triplox))]
+  (let [baseline-db ((:db-fn baseline))
+        triplox-db ((:db-fn triplox))]
     (doseq [[id view] views]
       (testing (str "JOB " id)
         ;; Read uncached baseline answers for verification.
         (let [expected (binding [datalevin-query/*cache?* false]
-                         (artifacts/normalized ((:query baseline) baseline-db id)))
-              actual (runner/bounded executor 30000 #((:query triplox) triplox-db id))
+                         (artifacts/normalized ((:query-fn baseline) baseline-db id)))
+              actual (runner/bounded executor 30000 #((:query-fn triplox) triplox-db id))
               snapshot ((:await-view! triplox) view tx 30000)]
           (is (= expected (artifacts/normalized actual)) "standard query")
           (is (= expected (artifacts/normalized (:rows snapshot))) "incremental view")
