@@ -36,6 +36,7 @@
                         (throw error))))) query-ids)
           (finally (when-let [close (:close-db! engine)] (close db))))
         pass-ms (when measured? (milliseconds pass-start))]
+
     (when measured?
       (doseq [[id rows elapsed] results]
         (let [answer (artifacts/save-result! output id rows)]
@@ -44,8 +45,10 @@
                                      :elapsed-ms elapsed :status "ok"} answer)))
         (when verify-expected
           (artifacts/verify-expected output id rows)))
+
       (artifacts/append! measurements
                          {:phase "query-pass" :elapsed-ms pass-ms :status "ok"}))
+
     pass-ms))
 
 (defn warmup! [engine executor {:keys [measurements engine-name] :as config}]
@@ -72,10 +75,12 @@
             (let [file (io/file output "mismatches" (str id ".edn"))]
               (io/make-parents file)
               (spit file (pr-str {:standard standard :incremental incremental})))
+
             (artifacts/append! measurements
                                {:phase "verification" :query id :status "failed"})
             (throw (ex-info "Incremental result differs from standard query"
                             {:query id})))))
+
       (artifacts/append! measurements
                          {:phase "verification" :queries (count snapshots) :status "ok"})
       (finally (when-let [close (:close-db! engine)] (close db))))))
@@ -109,6 +114,7 @@
                                        (try (format " indexing %.1f MB behind"
                                                     (/ (- (:tx-id last-tx) (indexed-tx-id)) 1e6))
                                             (catch Exception _ " indexing lag unknown"))))]
+
                         (reset! previous [now (or rows 0)])
                         (println (format "progress %.0fs table %s (%s/%s) rows %d (%.0f/s) transactions %d%s"
                                          (/ (- now start) 1e9) (some-> table name) table-index tables
@@ -117,6 +123,7 @@
                         (flush))
                       (recur))
                     (catch InterruptedException _))))]
+
     (.setDaemon thread true)
     (.start thread)
     thread))
@@ -148,12 +155,14 @@
         views (atom [])]
     (try
       (bounded executor timeout-ms (:schema! engine))
+
       (when incremental?
         (let [start (System/nanoTime)]
           (doseq [id query-ids] (swap! views conj [id (bounded executor timeout-ms #((:view! engine) id))]))
           (artifacts/append! measurements
                              {:phase "registration" :elapsed-ms (milliseconds start)
                               :status "ok"})))
+
       (let [start (System/nanoTime)
             loaded (load! engine config #(bounded executor timeout-ms (fn [] ((:transact! engine) %))))
             ingestion-ms (milliseconds start)
@@ -161,19 +170,23 @@
             snapshots (when (and incremental? (pos? (:transactions loaded)))
                         (await-views! engine @views tx catchup-timeout-ms))
             initial-ms (when incremental? (milliseconds start))]
+
         (when-not (pos? (reduce + (vals (:table-counts loaded))))
           (throw (ex-info "Dataset contains no rows" {})))
+
         (artifacts/append! measurements
                            {:phase "ingestion" :elapsed-ms ingestion-ms :status "ok"
                             :transactions (:transactions loaded)})
         (artifacts/write-json! (io/file output "load.json")
                                (dissoc loaded :last-tx))
+
         (if incremental?
           (let [catchup-ms (- initial-ms ingestion-ms)]
             (artifacts/append! measurements
                                {:phase "initial" :status "ok" :ingestion-ms ingestion-ms
                                 :catchup-ms catchup-ms :elapsed-ms initial-ms
                                 :final-tx-id (:tx-id tx)})
+
             (verify-views! engine executor config snapshots)
             (save-views! config snapshots))
           (do (warmup! engine executor config)
