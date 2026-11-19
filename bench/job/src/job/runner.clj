@@ -10,7 +10,7 @@
   (/ (- (System/nanoTime) start) 1e6))
 
 (defn bounded [^ExecutorService executor timeout-ms f]
-  (let [task (.submit executor ^Callable (reify Callable (call [_] (f))))]
+  (let [task (.submit executor ^Callable f)]
     (try (.get task timeout-ms TimeUnit/MILLISECONDS)
          (catch TimeoutException error
            (.cancel task true)
