@@ -7,11 +7,14 @@
  ;; Aliases that start a JVM pass Datalevin's flags from the datalevin.jvmopts argfile.
  :aliases
  {:test {:extra-paths ["test"]
+         :extra-deps {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
          :jvm-opts ["@datalevin.jvmopts"]
-         :main-opts ["-m" "job.test-runner"]}
+         :main-opts ["-m" "cognitect.test-runner" "-d" "test" "-e" ":integration"]}
+  ;; Needs a running Triplox dev server; see README.md.
   :integration-test {:extra-paths ["test"]
+                     :extra-deps {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
                      :jvm-opts ["@datalevin.jvmopts"]
-                     :main-opts ["-m" "job.integration-test"]}
+                     :main-opts ["-m" "cognitect.test-runner" "-d" "test" "-i" ":integration"]}
   :dev {:extra-paths ["test"]
         :jvm-opts ["@datalevin.jvmopts"]
         :extra-deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}

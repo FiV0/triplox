@@ -1,6 +1,6 @@
 (ns job.integration-test
   (:require [clojure.java.io :as io]
-            [clojure.test :as t :refer [deftest is testing]]
+            [clojure.test :refer [deftest is testing]]
             [datalevin.core :as d]
             [datalevin.query :as datalevin-query]
             [job.artifacts :as artifacts]
@@ -51,7 +51,7 @@
           (when (= id "11b")
             (is (= expected-11b expected) "fixture exercises missing-attribute negation")))))))
 
-(deftest final-job-results-match-standard-queries
+(deftest ^:integration final-job-results-match-standard-queries
   (let [directory (.toFile (Files/createTempDirectory "triplox-job-test-"
                                                       (make-array java.nio.file.attribute.FileAttribute 0)))
         baseline (datalevin-baseline directory)
@@ -79,8 +79,3 @@
         ((:close! triplox))
         ((:close! baseline))
         (doseq [file (reverse (file-seq directory))] (io/delete-file file))))))
-
-(defn -main [& _]
-  (let [{:keys [fail error]} (t/run-tests 'job.integration-test)]
-    (shutdown-agents)
-    (System/exit (if (zero? (+ fail error)) 0 1))))
