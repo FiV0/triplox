@@ -8,14 +8,16 @@
             [job.runner :as runner]))
 
 (defn -main [config-file]
+  ;; TODO: potentially move this to EDN.
   (let [config (json/read-str (slurp config-file) :key-fn keyword)
         output (:output config)
         measurements (io/file output "measurements.jsonl")
         engine (keyword (:engine config))
-        config (assoc config :engine engine
-                             :engine-name engine
-                             :query-ids (queries/selected (:queries config))
-                             :measurements measurements)]
+        config (assoc config
+                      :engine engine
+                      :engine-name engine
+                      :query-ids (queries/selected (:queries config))
+                      :measurements measurements)]
     (try
       (let [query-forms (into (sorted-map)
                               (map (fn [id] [id (if (= :datalevin (:engine config))
