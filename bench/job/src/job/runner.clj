@@ -76,12 +76,13 @@
               (spit file (pr-str {:standard standard :incremental incremental})))
 
             (artifacts/append! measurements
-                               {:phase "verification" :query id :status "failed"})
+                               {:phase "verification" :against "standard" :query id :status "failed"})
             (throw (ex-info "Incremental result differs from standard query"
                             {:query id})))))
 
       (artifacts/append! measurements
-                         {:phase "verification" :queries (count snapshots) :status "ok"})
+                         {:phase "verification" :against "standard"
+                          :queries (count snapshots) :status "ok"})
       (finally (when-let [close (:close-db! engine)] (close db))))))
 
 (defn- save-views! [{:keys [output measurements verify-expected]} snapshots]
@@ -91,7 +92,12 @@
                          (merge {:phase "view" :query id
                                  :applied-tx-id (:tx-id tx-key) :status "ok"} answer)))
     (when verify-expected
-      (artifacts/verify-expected output id rows))))
+      (artifacts/verify-expected output id rows)))
+
+  (when verify-expected
+    (artifacts/append! measurements
+                       {:phase "verification" :against "expected"
+                        :queries (count snapshots) :status "ok"})))
 
 (defn- report-progress!
   "Prints ingestion progress to the runner log every 10 seconds until stopped.
@@ -180,7 +186,7 @@
         (artifacts/write-json! (io/file output "load.json")
                                (dissoc loaded :last-tx))
 
-        ;; write down the measurements for view catchup; verify the views against the standard engine.
+        ;; write down the measurements for view catchup; verify and save the views.
         (if incremental?
           (let [catchup-ms (- initial-ms ingestion-ms)]
             (artifacts/append! measurements
@@ -188,10 +194,16 @@
                                 :catchup-ms catchup-ms :elapsed-ms initial-ms
                                 :final-tx-id (:tx-id tx)})
 
-            (verify-views! engine executor config snapshots)
+            ;; Without checked-in expected answers, check the views against the standard engine instead.
+            ;; This should only be the case for tests that use a smaller dataset.
+            (when-not (:verify-expected config)
+              (verify-views! engine executor config snapshots))
             (save-views! config snapshots))
+
+          ;; Run the standard queries with warmup.
           (do (warmup! engine executor config)
               (query-pass! engine executor config true))))
+
       (finally
         (doseq [[_ view] @views] (.close ^AutoCloseable view))
         (.shutdownNow executor)

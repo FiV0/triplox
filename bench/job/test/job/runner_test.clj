@@ -4,6 +4,7 @@
             [clojure.test :refer [deftest is]]
             [job.artifacts :as artifacts]
             [job.data :as data]
+            [job.queries :as queries]
             [job.runner :as runner])
   (:import [java.nio.file Files]
            [java.util.concurrent Executors]))
@@ -86,7 +87,7 @@
                                      (transact! [{:step 1}])
                                      (transact! [{:step 2}])
                                      {:transactions 3 :table-counts {:title 3} :last-tx (transact! [{:step 3}])})]
-        (f #(runner/run! engine config) directory queries))
+        (f (fn run [& [overrides]] (runner/run! engine (merge config overrides))) directory queries))
       (finally
         (doseq [file (reverse (file-seq directory))] (io/delete-file file))))))
 
@@ -105,8 +106,18 @@
           (is (not-any? #(= "refresh" (:phase %)) events))
           (when (= engine :triplox-incremental)
             (is (= [[3 "1a"] [3 "2a"]] @queries))
-            (is (= [{:phase "verification" :queries 2 :status "ok"}]
+            (is (= [{:phase "verification" :against "standard" :queries 2 :status "ok"}]
                    (filter #(= "verification" (:phase %)) events)))))))))
+
+(deftest incremental-with-expected-answers-skips-standard-queries
+  (with-redefs [queries/expected {"1a" [["1a" 3]] "2a" [["2a" 3]]}]
+    (with-loaded-run :triplox-incremental (fn [db id] [[id db]])
+      (fn [run! directory standard-queries]
+        (run! {:verify-expected true})
+        (is (empty? @standard-queries))
+        (is (= [{:phase "verification" :against "expected" :queries 2 :status "ok"}]
+               (filter #(= "verification" (:phase %))
+                       (artifacts/read-events (io/file directory "measurements.jsonl")))))))))
 
 (deftest incremental-mismatch-fails-with-diagnostic-answers
   (with-loaded-run :triplox-incremental (fn [_ _] [["wrong"]])

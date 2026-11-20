@@ -22,6 +22,7 @@ def report(root):
     summaries, queries, answers, mismatches, problems = [], [], {}, [], []
     configurations = []
     incremental_verified = False
+    verified_against = None
     for directory in sorted(root.iterdir()):
         config = read_json(directory / "config.json") if directory.is_dir() else None
         if config is None:
@@ -57,11 +58,13 @@ def report(root):
             if not first and not initial_queries:
                 problems.append(f"{directory.name}: measurement missing")
             if directory.name == "triplox-incremental":
-                verified = any(e["phase"] == "verification" and e["status"] == "ok"
-                               and e.get("queries") == len(selected) for e in events)
-                incremental_verified = verified and summaries[-1]["status"] == "ok"
-                if not incremental_verified:
-                    problems.append(f"{directory.name}: standard-query verification did not complete")
+                verification = next((e for e in events if e["phase"] == "verification" and e["status"] == "ok"
+                                     and e.get("queries") == len(selected)), None)
+                incremental_verified = verification is not None and summaries[-1]["status"] == "ok"
+                if incremental_verified:
+                    verified_against = verification.get("against", "standard")
+                else:
+                    problems.append(f"{directory.name}: incremental answer verification did not complete")
     if not summaries:
         problems.append("No engine artifacts")
     if configurations and any(c != configurations[0] for c in configurations):
@@ -74,7 +77,8 @@ def report(root):
                 mismatches.append({"answer": key, "hashes": hashes})
     compared = len(answers) > 1 and any(answers.values())
     (root / "comparison.json").write_text(json.dumps({"mismatches": mismatches, "problems": problems,
-                                                       "incremental-standard-verified": incremental_verified,
+                                                       "incremental-verified": incremental_verified,
+                                                       "incremental-verified-against": verified_against,
                                                        "cross-engine-verified": compared and not mismatches and not problems and all(row["status"] == "ok" for row in summaries),
                                                        "engines": list(answers)}, indent=2) + "\n")
     for filename, rows in [("summary.csv", summaries), ("queries.csv", queries)]:
@@ -94,7 +98,8 @@ def report(root):
         ingestion_ms = "n/a" if row["ingestion-ms"] is None else row["ingestion-ms"]
         lines.append(f"| {row['engine']} | {row['status']} | {row['cache-state']} | {row['initial-metric']} | {row['initial-ms']} | {ingestion_ms} |")
     lines += ["", f"Cross-engine answer mismatches or missing answers: {len(mismatches)}.",
-              "Incremental answers match standard Triplox queries." if incremental_verified else "",
+              {"standard": "Incremental answers match standard Triplox queries.",
+               "expected": "Incremental answers match the upstream expected answers."}.get(verified_against, ""),
               "" if compared else "Cross-engine verification was not performed: fewer than two engines supplied answers.",
               *problems,
               "", "Failed and incomplete runs are not full-suite performance results."]

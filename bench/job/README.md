@@ -148,11 +148,12 @@ these scores do not establish general query speedups or equal durability.
 JOB emphasizes multiway joins and optimization; the small aggregate outputs
 can also conceal substantial intermediate maintenance work.
 
-Once loading and catchup finish, incremental mode executes each selected
-standard Triplox query against the same loaded database and compares its rows
-with the final incremental view. This is one correctness check per query,
-outside the measured time, with no concurrent writes. A mismatch fails the run
-and saves both answers for diagnosis. This also runs with
+Once loading and catchup finish, incremental mode checks each final view once,
+outside the measured time, with no concurrent writes. On the full dataset it
+compares the view with the upstream expected answer. On a fixture, which has
+no expected answers, it runs the standard Triplox query against the same
+loaded database and compares its rows instead. A mismatch fails the run and
+saves both answers for diagnosis. This also runs with
 `--engine triplox-incremental` alone.
 
 Answers are saved once, under `answers/`. The benchmark ends there;
@@ -258,13 +259,14 @@ reports with `./job report --runs runs/<run-id>`.
   success/failure and diagnostic evidence.
 - `summary.csv`, `queries.csv`, `summary.md`, `comparison.json`: regenerated
   summaries, per-query timings, missing or differing final answers, and whether
-  incremental answers were verified against standard Triplox queries.
+  incremental answers were verified, and against what (`expected` or `standard`).
 
 The reporter fails on incomplete runs, missing warmup, incompatible workload
 configurations, differing/missing answers, or missing
-standard-query verification for incremental runs. A single engine run can
-check the original expected answers; an incremental run also checks standard
-Triplox queries, but neither establishes cross-engine parity on its own.
+answer verification for incremental runs. A single engine run can
+check the original expected answers; an incremental run on a fixture checks
+standard Triplox queries instead, but neither establishes cross-engine parity
+on its own.
 Ingestion-only reports explicitly omit query verification. The reporter only
 accepts the current run format (4); older run directories are rejected.
 Do not combine a failed/partial run into a full-suite performance score.

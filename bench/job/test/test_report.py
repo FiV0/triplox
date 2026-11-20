@@ -84,20 +84,31 @@ class ReportTest(unittest.TestCase):
         self.assertTrue(report(self.root))
         comparison = json.loads((self.root / "comparison.json").read_text())
         self.assertTrue(comparison["cross-engine-verified"])
-        self.assertTrue(comparison["incremental-standard-verified"])
+        self.assertTrue(comparison["incremental-verified"])
 
-    def test_standalone_incremental_run_requires_standard_query_verification(self):
+    def test_standalone_incremental_run_requires_verification(self):
         directory = self.engine("triplox-incremental")
         self.assertTrue(report(self.root))
         comparison = json.loads((self.root / "comparison.json").read_text())
         self.assertFalse(comparison["cross-engine-verified"])
-        self.assertTrue(comparison["incremental-standard-verified"])
+        self.assertTrue(comparison["incremental-verified"])
+        self.assertEqual("standard", comparison["incremental-verified-against"])
         events_file = directory / "measurements.jsonl"
         events = [json.loads(line) for line in events_file.read_text().splitlines()]
         events_file.write_text("\n".join(json.dumps(e) for e in events
                                        if e["phase"] != "verification"))
         self.assertFalse(report(self.root))
-        self.assertFalse(json.loads((self.root / "comparison.json").read_text())["incremental-standard-verified"])
+        self.assertFalse(json.loads((self.root / "comparison.json").read_text())["incremental-verified"])
+
+    def test_incremental_run_verified_against_expected_answers(self):
+        directory = self.engine("triplox-incremental")
+        events = [{"phase": "initial", "status": "ok", "elapsed-ms": 12},
+                  {"phase": "verification", "against": "expected", "status": "ok", "queries": 1}]
+        (directory / "measurements.jsonl").write_text("\n".join(map(json.dumps, events)))
+        self.assertTrue(report(self.root))
+        comparison = json.loads((self.root / "comparison.json").read_text())
+        self.assertEqual("expected", comparison["incremental-verified-against"])
+        self.assertIn("upstream expected answers", (self.root / "summary.md").read_text())
 
     def test_older_run_formats_are_rejected(self):
         self.engine("datalevin")
