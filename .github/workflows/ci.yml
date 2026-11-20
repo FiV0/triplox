@@ -44,8 +44,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
 
+      # Shares the cache with the integration-test job in job-benchmark.yml, which runs the same build.
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: dev-server
 
       - name: Build server
         run: cargo build
