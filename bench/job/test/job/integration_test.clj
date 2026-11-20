@@ -72,6 +72,7 @@
                                ((:transact! baseline) tx)
                                ((:transact! triplox) tx)))
                            nil (partition-all 2 fixture))]
+        ((:await-tx! triplox) last-tx)
         (check-queries! baseline triplox @views last-tx executor matching-answer))
       (finally
         (doseq [[_ view] @views] (.close ^AutoCloseable view))
