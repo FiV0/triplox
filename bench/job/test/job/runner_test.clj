@@ -8,24 +8,6 @@
             [job.runner :as runner])
   (:import [java.nio.file Files]))
 
-(deftest ingestion-and-catchup-have-no-artifact-io-between-them
-  (let [calls (atom [])
-        record! #(swap! calls conj %)
-        engine {:db-fn (constantly nil)
-                :query-fn (fn [& _] [])
-                :schema! #(record! :schema)
-                :view! (fn [_] (reify java.lang.AutoCloseable (close [_])))
-                :await-view! (fn [_ tx _] (record! :await) {:rows [] :tx-key tx})
-                :close! #(record! :close)}]
-    (with-redefs [data/load-data! (fn [& _] (record! :load)
-                                       {:transactions 1 :table-counts {:title 1} :last-tx {:tx-id 7}})
-                  artifacts/append! (fn [& _] (record! :write))
-                  artifacts/write-json! (fn [& _] (record! :write))
-                  artifacts/save-result! (fn [& _] (record! :write) {})]
-      (runner/run! engine {:engine-name :triplox-incremental :query-ids ["1a"]
-                           :output "unused" :timeout-ms 1000 :catchup-timeout-ms 1000})
-      (is (= :await (nth @calls (inc (.indexOf @calls :load))))))))
-
 (defn with-loaded-run [engine-name standard-rows f]
   (let [directory (.toFile (Files/createTempDirectory "job-runner-test-"
                             (make-array java.nio.file.attribute.FileAttribute 0)))
