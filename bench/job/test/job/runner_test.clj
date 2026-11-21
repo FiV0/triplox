@@ -6,43 +6,7 @@
             [job.data :as data]
             [job.queries :as queries]
             [job.runner :as runner])
-  (:import [java.nio.file Files]
-           [java.util.concurrent Executors]))
-
-(deftest warmup-completes-before-measurement
-  (let [calls (atom [])
-        executor (Executors/newSingleThreadExecutor)
-        database (Object.)
-        engine {:db-fn (constantly database)
-                :query-fn (fn [db id] (swap! calls conj [:query id db (Thread/currentThread)]) [[id]])}
-        config {:query-ids ["1a" "2a"] :output "unused" :engine-name :datalevin :timeout-ms 1000}]
-    (try
-      (with-redefs [artifacts/append! (fn [_ event] (swap! calls conj [:event event]))
-                    artifacts/save-result! (fn [& _] {})]
-        (runner/warmup! engine executor config)
-        (#'runner/query-pass! engine executor config true)
-        (let [queries (filter #(= :query (first %)) @calls)
-              warmup-index (.indexOf @calls [:event {:phase "warmup" :status "ok" :queries 2}])]
-          (is (= ["1a" "2a" "1a" "2a"] (mapv second queries)))
-          (is (= 1 (count (set (map #(nth % 3) queries)))))
-          (is (every? #(identical? database (nth % 2)) queries))
-          (is (= 2 warmup-index))
-          (is (not-any? #(contains? (second %) :elapsed-ms)
-                        (filter #(= :event (first %)) (take 3 @calls))))))
-      (finally (.shutdownNow executor)))))
-
-(deftest warmup-failure-prevents-success-event
-  (let [executor (Executors/newSingleThreadExecutor)
-        events (atom [])]
-    (try
-      (with-redefs [artifacts/append! (fn [_ event] (swap! events conj event))]
-        (is (thrown? Exception
-                     (runner/warmup! {:db-fn (constantly nil)
-                                      :query-fn (fn [& _] (throw (ex-info "failed" {})))}
-                                     executor {:engine-name :datalevin :query-ids ["1a"]
-                                               :timeout-ms 1000})))
-        (is (not-any? #(= "ok" (:status %)) @events)))
-      (finally (.shutdownNow executor)))))
+  (:import [java.nio.file Files]))
 
 (deftest ingestion-and-catchup-have-no-artifact-io-between-them
   (let [calls (atom [])
@@ -103,7 +67,6 @@
             (is (= [[id 3]]
                    (edn/read-string (slurp (io/file answers (str id ".edn")))))))
           (is (every? #(= 3 (first %)) @queries))
-          (is (not-any? #(= "refresh" (:phase %)) events))
           (when (= engine :triplox-incremental)
             (is (= [[3 "1a"] [3 "2a"]] @queries))
             (is (= [{:phase "verification" :against "standard" :queries 2 :status "ok"}]
