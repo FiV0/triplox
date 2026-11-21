@@ -1,0 +1,29 @@
+{:paths ["src" "resources" "classes"]
+ :deps {org.clojure/clojure {:mvn/version "1.12.5"}
+        org.clojure/data.json {:mvn/version "2.5.1"}
+        datalevin/datalevin {:mvn/version "1.1.0"}
+        ;; Clojure sources only; build.clj compiles the client's Java sources.
+        xyz.triplox/triplox {:local/root "../../triplox-jvm"}}
+ ;; Aliases that start a JVM pass Datalevin's flags from the datalevin.jvmopts argfile.
+ :aliases
+ {:test {:extra-paths ["test"]
+         :extra-deps {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+         :jvm-opts ["@datalevin.jvmopts"]
+         :main-opts ["-m" "cognitect.test-runner" "-d" "test" "-e" ":integration"]}
+  ;; Needs a running Triplox dev server; see README.md.
+  :integration-test {:extra-paths ["test"]
+                     :extra-deps {io.github.cognitect-labs/test-runner {:git/tag "v0.5.1" :git/sha "dfb30dd"}}
+                     :jvm-opts ["@datalevin.jvmopts"]
+                     :main-opts ["-m" "cognitect.test-runner" "-d" "test" "-i" ":integration"]}
+  ;; Writes resources/job/witness.edn for the integration test.
+  :witness {:extra-paths ["test"]
+            :main-opts ["-m" "job.witness"]}
+  :dev {:extra-paths ["test"]
+        :jvm-opts ["@datalevin.jvmopts"]
+        :extra-deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}
+                     nrepl/nrepl {:mvn/version "1.3.1"}
+                     cider/cider-nrepl {:mvn/version "0.52.1"}}
+        :main-opts ["-m" "nrepl.cmdline"
+                    "--middleware" "[cider.nrepl/cider-middleware]"]}
+  :build {:deps {io.github.clojure/tools.build {:git/tag "v0.10.6" :git/sha "52cf7d6"}}
+          :ns-default build}}}
