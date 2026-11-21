@@ -7,22 +7,11 @@
             [job.data :as data]
             [job.engines :as engines]
             [job.queries :as queries]
-            [job.runner :as runner])
+            [job.runner :as runner]
+            [job.witness :as witness])
   (:import [java.lang AutoCloseable]
            [java.nio.file Files]
            [java.util.concurrent Executors]))
-
-(def fixture
-  [{:job/id 1 :company-type/kind "production companies"}
-   {:job/id 2 :company-name/name "Film Company" :company-name/country-code "[us]"}
-   {:job/id 3 :keyword/keyword "sequel"}
-   {:job/id 4 :link-type/link "follows"}
-   {:job/id 5 :title/title "Money Movie" :title/production-year 1998}
-   {:job/id 6 :title/title "Second Movie" :title/production-year 2001}
-   {:job/id 7 :movie-link/movie 5 :movie-link/linked-movie 6 :movie-link/link-type 4}
-   {:job/id 8 :movie-keyword/movie 5 :movie-keyword/keyword 3}
-   {:job/id 9 :movie-companies/movie 5 :movie-companies/company-type 1
-    :movie-companies/company 2}])
 
 ;; The Datalevin engine bulk-loads CSVs, so the fixture goes through a transactional connection.
 (defn- datalevin-baseline [directory]
@@ -33,9 +22,7 @@
      :query-fn (fn [db id] (mapv vec (d/q (get queries/queries id) db)))
      :close! #(d/close conn)}))
 
-(def matching-answer [["Film Company" "follows" "Money Movie"]])
-
-(defn- check-queries! [baseline triplox views tx executor expected-11b]
+(defn- check-queries! [baseline triplox views tx executor]
   (let [baseline-db ((:db-fn baseline))
         triplox-db ((:db-fn triplox))]
     (doseq [[id view] views]
@@ -45,11 +32,10 @@
                          (artifacts/normalized ((:query-fn baseline) baseline-db id)))
               actual (runner/bounded executor 30000 #((:query-fn triplox) triplox-db id))
               snapshot ((:await-view! triplox) view tx 30000)]
+          (is (seq expected) "witness data gives an answer")
           (is (= expected (artifacts/normalized actual)) "standard query")
           (is (= expected (artifacts/normalized (:rows snapshot))) "incremental view")
-          (is (<= (:tx-id tx) (get-in snapshot [:tx-key :tx-id])) "view freshness")
-          (when (= id "11b")
-            (is (= expected-11b expected) "fixture exercises missing-attribute negation")))))))
+          (is (<= (:tx-id tx) (get-in snapshot [:tx-key :tx-id])) "view freshness"))))))
 
 (deftest ^:integration final-job-results-match-standard-queries
   (let [directory (.toFile (Files/createTempDirectory "triplox-job-test-"
@@ -71,9 +57,9 @@
                              (let [tx (data/transaction rows)]
                                ((:transact! baseline) tx)
                                ((:transact! triplox) tx)))
-                           nil (partition-all 2 fixture))]
+                           nil (partition-all 25 (witness/read-resource)))]
         ((:await-tx! triplox) last-tx)
-        (check-queries! baseline triplox @views last-tx executor matching-answer))
+        (check-queries! baseline triplox @views last-tx executor))
       (finally
         (doseq [[_ view] @views] (.close ^AutoCloseable view))
         (.shutdownNow executor)

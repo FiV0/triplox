@@ -61,9 +61,9 @@ Build this checkout and check all three modes:
 The fixture includes matches for queries 11a and 11b, whose missing-attribute
 checks translate to `(not [?mc :movie-companies/note _])`.
 
-For a small fixture check of the final results, start a dev server from the
-repository root (`cargo run -- config/triplox-dev.toml`) and run from this
-directory:
+To check the final results of all three modes on witness data, start a dev
+server from the repository root (`cargo run -- config/triplox-dev.toml`) and
+run from this directory:
 
 ```bash
 clojure -M:integration-test
@@ -74,10 +74,19 @@ Run `./job test` first to compile the Java sources. Set `TRIPLOX_HOST` and
 gives each connection its own in-memory database.
 It registers all 113 views before batched ingestion, waits for the final
 loading transaction, and compares every query's incremental result with its
-standard Triplox result and the original Datalevin query. It also checks the
-known nonempty answer for query 11b. The Datalevin oracle uses uncached answers.
-Most other queries are empty on this small fixture, so this does not establish
-full IMDb answer coverage. No updates or deletions are added after loading.
+standard Triplox result and the original Datalevin query. The Datalevin oracle
+uses uncached answers. No updates or deletions are added after loading.
+
+The test loads [resources/job/witness.edn](resources/job/witness.edn), a
+synthetic dataset of about 500 entities. A witness is a set of entities that
+gives a query at least one answer. The dataset holds one witness for each of
+the 113 queries, so every answer is nonempty. `job.witness` builds the witness
+from the query clauses. Each entity gets only the attributes that its patterns
+use, with values that satisfy the predicates. Leaf entities with the same
+attributes are shared between queries. If you change a query, run
+`clojure -M -m job.witness` to write the file again. A unit test fails when
+the file is out of date or when a query has no answer in Datalevin. The
+witness data does not test answer values on the real IMDb data.
 
 For the original IMDb snapshot:
 
