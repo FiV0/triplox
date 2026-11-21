@@ -9,7 +9,7 @@
 
 (deftest resource-is-current
   (is (= (witness/generate) (witness/read-resource))
-      "regenerate with `clojure -M -m job.witness`"))
+      "regenerate with `clojure -M:witness`"))
 
 (deftest every-query-has-an-answer
   (let [directory (.toFile (Files/createTempDirectory "triplox-job-witness-"

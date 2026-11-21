@@ -84,7 +84,7 @@ the 113 queries, so every answer is nonempty. `job.witness` builds the witness
 from the query clauses. Each entity gets only the attributes that its patterns
 use, with values that satisfy the predicates. Leaf entities with the same
 attributes are shared between queries. If you change a query, run
-`clojure -M -m job.witness` to write the file again. A unit test fails when
+`clojure -M:witness` to write the file again. A unit test fails when
 the file is out of date or when a query has no answer in Datalevin. The
 witness data does not test answer values on the real IMDb data.
 
