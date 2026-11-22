@@ -45,7 +45,7 @@ jobs:
 
       # Compiles the Java sources, then runs the Clojure and Python unit tests.
       - name: Run unit tests
-        run: ./job test
+        run: ./job.py test
 
   integration-test:
     runs-on: ubuntu-latest

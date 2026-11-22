@@ -34,17 +34,17 @@ sudo ./disks setup    # 70G rustfs.img + 20G slatedb-cache.img under disks.d/
 
 Sizes can be changed on first setup with `JOB_RUSTFS_DISK_SIZE` and
 `JOB_SLATEDB_CACHE_DISK_SIZE`. The images are preallocated, and the loop devices
-use direct I/O. `./job` refuses to start Triplox runs without the mounts and
-records them in `<engine>/disks.json`; `./job down --remove` deletes the run's
+use direct I/O. `./job.py` refuses to start Triplox runs without the mounts and
+records them in `<engine>/disks.json`; `./job.py down --remove` deletes the run's
 directories on them. `sudo ./disks teardown [--delete]` unmounts the images (and
 deletes them). The filesystems still share the physical drive, so a device cache
 flush is not isolated; use separate drives for full isolation.
 
 ```bash
 cd bench/job
-./job prepare --fixture --data-dir data/fixture --engine baselines
-./job test
-./job run --engine baselines --data-dir data/fixture
+./job.py prepare --fixture --data-dir data/fixture --engine baselines
+./job.py test
+./job.py run --engine baselines --data-dir data/fixture
 ```
 
 This checks the Datalevin baseline, including the full cache warmup. The small fixture exercises only a few joins; most query answers
@@ -53,8 +53,8 @@ are empty. Its timings are smoke-test output, not representative JOB results.
 Build this checkout and check all three modes:
 
 ```bash
-./job prepare --build-triplox --engine all
-./job run --engine all --data-dir data/fixture \
+./job.py prepare --build-triplox --engine all
+./job.py run --engine all --data-dir data/fixture \
   --batch-size 1
 ```
 
@@ -69,7 +69,7 @@ run from this directory:
 clojure -M:integration-test
 ```
 
-Run `./job test` first to compile the Java sources. Set `TRIPLOX_HOST` and
+Run `./job.py test` first to compile the Java sources. Set `TRIPLOX_HOST` and
 `TRIPLOX_PORT` to override `127.0.0.1:5490`. Use the dev configuration, which
 gives each connection its own in-memory database.
 It registers all 113 views before batched ingestion, waits for the final
@@ -91,8 +91,8 @@ witness data does not test answer values on the real IMDb data.
 For the original IMDb snapshot:
 
 ```bash
-./job prepare --download-data --data-dir data/imdb --engine all
-./job run --engine all --data-dir data/imdb
+./job.py prepare --download-data --data-dir data/imdb --engine all
+./job.py run --engine all --data-dir data/imdb
 ```
 
 You can supply an existing directory containing all 21 original CSV files
@@ -120,8 +120,8 @@ client's Java sources and `java/job/CSVReader.java` into `classes/`.
   writes the port to `.nrepl-port` (add `--port <n>` to pick one). No build step
   is needed first: load `build.clj` and evaluate `(javac nil)` from its comment
   block before you use `job.source` or the client.
-- `clojure -T:build uber` builds `target/job.jar`. `./job prepare` and `./job run`
-  build it, and `./job run` starts each engine with `java -jar target/job.jar`.
+- `clojure -T:build uber` builds `target/job.jar`. `./job.py prepare` and `./job.py run`
+  build it, and `./job.py run` starts each engine with `java -jar target/job.jar`.
   The jar manifest carries Datalevin's `--add-opens` flags; the `:test`,
   `:integration-test` and `:dev` aliases read them from `datalevin.jvmopts`.
 - `clojure -T:build clean` deletes `target/`.
@@ -228,17 +228,17 @@ when the checkout changes.
 A query-free infrastructure check is also available:
 
 ```bash
-./job run --engine datalevin --data-dir data/fixture --ingest-only
-./job run --engine triplox-standard --data-dir data/fixture --ingest-only
+./job.py run --engine datalevin --data-dir data/fixture --ingest-only
+./job.py run --engine triplox-standard --data-dir data/fixture --ingest-only
 ```
 
-For manual service inspection, `./job up --engine triplox-standard` prints the owned state directory and
+For manual service inspection, `./job.py up --engine triplox-standard` prints the owned state directory and
 leaves the service running. Normal `run` invocations stop their services on
 completion or failure, retain databases/volumes, and preserve logs. Cleanup is
 limited to the specific owned state directory:
 
 ```bash
-./job down --state state/<run-id>-triplox-incremental --remove
+./job.py down --state state/<run-id>-triplox-incremental --remove
 ```
 
 `--remove` deletes that run's database state and Compose volumes. Omit it to
@@ -248,7 +248,7 @@ stop services while keeping storage. Run artifacts are retained either way.
 
 Every invocation creates `runs/<UTC timestamp>-<random suffix>/`. Keep the
 whole directory as an immutable experiment artifact; regenerate derived
-reports with `./job report --runs runs/<run-id>`.
+reports with `./job.py report --runs runs/<run-id>`.
 
 - `manifest.json`: configuration, engine versions, Git revision, dirty status,
   diff hash, benchmark source hashes, JVM and machine details, run status.

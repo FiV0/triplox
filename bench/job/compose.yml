@@ -7,7 +7,7 @@ services:
       RUSTFS_SECRET_KEY: triplox123
     volumes:
       # Per-run directory on the loop-mounted RustFS filesystem (see ./disks).
-      - ${JOB_RUSTFS_DIR:?set by ./job}:/data
+      - ${JOB_RUSTFS_DIR:?set by ./job.py}:/data
     healthcheck:
       test: [CMD, curl, -f, http://localhost:9000/health/ready]
       interval: 2s
@@ -35,7 +35,7 @@ services:
       - triplox-data:/var/lib/triplox
       # Per-run directory on the loop-mounted SlateDB cache filesystem (see ./disks);
       # the file log stays in triplox-data on the root filesystem.
-      - ${JOB_SLATEDB_CACHE_DIR:?set by ./job}:/var/lib/triplox/cache
+      - ${JOB_SLATEDB_CACHE_DIR:?set by ./job.py}:/var/lib/triplox/cache
     depends_on:
       createbucket:
         condition: service_completed_successfully
