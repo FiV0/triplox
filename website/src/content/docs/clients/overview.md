@@ -37,6 +37,10 @@ otherwise data will accumulate on the client. A subscription requires resources 
 when no longer needed. Currently every `subscribe` triggers a fresh incremental query on the server, there is currently no
 way to have one incremental query on the server that pushes its changes to multiple clients.
 
+The first delta is the query result at registration, also when it is empty. After that, the server sends one delta for each
+SlateDB WAL batch of transactions that it indexes. If a batch does not change the query result, the delta is empty.
+We currently mainly send empty deltas so that subscriptions see progress up to the `TxKey` of the batch.
+
 ## API method lifecycle and client state
 
 TODO: Describe HTTP/2 connection and multiplexing
