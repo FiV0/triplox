@@ -9,8 +9,10 @@ adapted from Datalevin commit `fcab56d2fb7d7137011b125a78c0383b9dbb3816`:
 
 These files are covered by the included Eclipse Public License 2.0. The loader
 emits plain triples instead of Datalevin datoms; the CSV reader's package is
-changed. The query namespace (`src/job/job_queries.clj`) preserves the
-original Datalevin expressions.
+changed. The entity-id bases from `movie_info_idx` to `title` move up by
+10,000,000, because the ids of `movie_info` reach into the old `movie_info_idx`
+range. The query namespace (`src/job/job_queries.clj`) preserves the original
+Datalevin expressions.
 
 JOB originates from Viktor Leis et al., *How Good Are Query Optimizers, Really?*,
 PVLDB 9(3), 2015. Data source: https://event.cwi.nl/da/job/imdb.tgz.

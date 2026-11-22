@@ -19,6 +19,6 @@
 
 (deftest source-mapping
   (let [load-title (second (first (filter #(= :title (first %)) source/tables)))]
-    (is (= [[80000001 :title/title "Movie"] [80000001 :title/kind 21]
-            [80000001 :title/production-year 2000]]
+    (is (= [[90000001 :title/title "Movie"] [90000001 :title/kind 21]
+            [90000001 :title/production-year 2000]]
            (vec (load-title (StringReader. "1,Movie,,1,2000,,,,,,\n")))))))

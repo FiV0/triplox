@@ -127,13 +127,14 @@
 (def link-type-base       30)
 (def movie-companies-base 20000000)
 (def movie-info-base      30000000)
-(def movie-info-idx-base  40000000)
-(def movie-keyword-base   50000000)
+;; movie_info has 14.8M rows, so the bases from movie_info_idx to title are 10M above Datalevin's.
+(def movie-info-idx-base  50000000)
+(def movie-keyword-base   60000000)
 (def movie-link-base      100000)
-(def name-base            60000000)
-(def person-info-base     70000000)
+(def name-base            70000000)
+(def person-info-base     80000000)
 (def role-type-base       50)
-(def title-base           80000000)
+(def title-base           90000000)
 
 (defn- add-comp-cast-type [reader]
   (eduction
