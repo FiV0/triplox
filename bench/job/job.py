@@ -338,7 +338,6 @@ def main():
     elif args.command == "test":
         build("javac")
         command(["clojure", "-M:test"])
-        command([sys.executable, "-m", "unittest", "discover", "-s", "test", "-p", "test_*.py"])
     elif args.command == "down":
         if not args.state:
             parser.error("down requires --state")

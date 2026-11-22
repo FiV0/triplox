@@ -43,7 +43,7 @@ jobs:
           key: job-clojure-${{ runner.os }}-${{ hashFiles('bench/job/deps.edn', 'triplox-jvm/deps.edn') }}
           restore-keys: job-clojure-${{ runner.os }}-
 
-      # Compiles the Java sources, then runs the Clojure and Python unit tests.
+      # Compiles the Java sources, then runs the Clojure unit tests.
       - name: Run unit tests
         run: ./job.py test
 
