@@ -15,7 +15,6 @@ import subprocess
 import sys
 import tarfile
 import threading
-import time
 import urllib.request
 import uuid
 
@@ -105,17 +104,6 @@ def prepare(args):
     build("uber")
 
 
-def wait_port(port, timeout=120):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                return
-        except OSError:
-            time.sleep(0.2)
-    raise RuntimeError(f"Service did not become ready on port {port}")
-
-
 def require_free_port(port):
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", port))
@@ -144,8 +132,7 @@ def start_services(config):
             disks[mount.name] = {"directory": str(directory),
                                  "mount": json.loads(capture(["findmnt", "-J", "-T", str(directory)]))}
         write_json(Path(config["output"]) / "disks.json", disks)
-        command(["docker", "compose", "-f", ROOT / "compose.yml", "-p", config["project"], "up", "-d"], env=environment)
-        wait_port(config["port"])
+        command(["docker", "compose", "-f", ROOT / "compose.yml", "-p", config["project"], "up", "-d", "--wait"], env=environment)
         ids = capture(["docker", "ps", "-q", "--filter", f"label=com.docker.compose.project={config['project']}"]).split()
         write_json(Path(config["output"]) / "containers.json", json.loads(capture(["docker", "inspect", *ids])))
 

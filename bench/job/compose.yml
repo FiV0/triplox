@@ -28,6 +28,15 @@ services:
       context: ../..
       dockerfile: docker/Dockerfile
     command: [/etc/triplox/job.toml]
+    # Triplox opens storage before it binds, so a connection from inside the container means ready.
+    healthcheck:
+      test: [CMD, bash, -c, "exec 3<>/dev/tcp/127.0.0.1/5490"]
+      # Fast checks only during startup; each check adds two lines to the Triplox log.
+      start_period: 120s
+      start_interval: 1s
+      interval: 60s
+      timeout: 2s
+      retries: 3
     ports:
       - "127.0.0.1:${JOB_TRIPLOX_PORT:-15490}:5490"
     volumes:
