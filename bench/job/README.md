@@ -1,8 +1,7 @@
 # JOB benchmark
 
 Run all commands from this directory. Paths that you give to `./job.py` start
-from the working directory of your shell. See [NOTICE.md](NOTICE.md) for the
-sources of the vendored files.
+from the working directory of your shell.
 
 ## Separate filesystems for Triplox runs
 
@@ -11,7 +10,8 @@ loop-mounted ext4 filesystems. The Triplox file log stays on the root
 filesystem. If they share one filesystem, each fsync of the file log can wait
 for gigabytes of RustFS and cache writes.
 
-Create and mount the images once after each boot:
+Create and mount the images once after each boot if you really running locally. Otherwise
+setup the testing VM with the appropriate partitions.
 
 ```bash
 sudo ./disks setup    # 70G rustfs.img + 20G slatedb-cache.img under disks.d/
@@ -103,6 +103,9 @@ the checkout, build the default image again.
 
 ## Services
 
+`./job.py run` starts the services that it needs and stops them at the end. For
+a normal run, you do not need `up` or `down`.
+
 To test the infrastructure without queries:
 
 ```bash
@@ -110,20 +113,39 @@ To test the infrastructure without queries:
 ./job.py run --engine triplox-standard --data-dir data/fixture --ingest-only
 ```
 
-To start the services and keep them running for inspection, run
-`./job.py up --engine triplox-standard`. The command prints the state
-directory of the run.
+### Keep the services running with `up`
 
-A normal `run` stops its services at the end, and it keeps the databases,
-volumes, and logs. To stop the services of a run:
+Use `up` when you want a Triplox server that keeps running, for example to
+connect to it yourself. `up` starts RustFS and the Triplox server for one
+Triplox mode, and then it exits. It does not load data or run queries.
+Datalevin is embedded in the runner, so `up` does not support it.
 
 ```bash
-./job.py down --state state/<run-id>-triplox-incremental --remove
+./job.py up --engine triplox-standard
 ```
 
-`--remove` deletes the database state and the Compose volumes of that run. It
-also deletes the directories of the run on the separate filesystems. Without
-`--remove`, the command stops the services and keeps the storage.
+The server listens on `--port` (default 15490). The command prints the state
+directory of the run, `state/<run-id>-triplox-standard`. The services keep
+running until you give that directory to `down`.
+
+### Stop the services and delete the storage with `down`
+
+Use `down` in these cases:
+
+- After `up`, to stop the services.
+- After `run` or `up`, to delete the storage of the run. A `run` stops its
+  services, but it keeps the database state, the Compose volumes, and the
+  directories on the separate filesystems. This storage stays on disk until you
+  delete it with `down --remove`.
+
+```bash
+./job.py down --state state/<run-id>-triplox-standard           # Stop, keep the storage
+./job.py down --state state/<run-id>-triplox-standard --remove  # Stop, delete the storage
+```
+
+`--remove` deletes the state directory and the Compose volumes of the run. It
+also deletes the directories of the run on the separate filesystems. The
+results in `runs/<run-id>/` stay.
 
 ## Results
 
