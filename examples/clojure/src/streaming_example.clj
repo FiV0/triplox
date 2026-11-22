@@ -2,26 +2,29 @@
 
 (def conn (tc/connect "localhost" 5490))
 
-;; Define a :name attribute
+;; define a :name attribute
 (tc/transact conn [{:db/ident :name
                     :db/valueType :db.type/string
                     :db/cardinality :db.cardinality/one}])
 
-;; 2. Subscribe to name changes
+;; subscribe to name changes
 (def sub (tc/subscribe conn
                        '{:find [?e ?name]
                          :where [[?e :name ?name]]}))
 
-(tc/registration-tx-key sub)
-;; => {:tx-id 1,
-;;     :system-time
-;;     #object[java.time.Instant 0x7c107312 "2026-09-02T12:31:24.534987Z"]}
+;; take empty initial tuples
+(tc/take! sub)
+;; => []
 
-;; Transact a name; the subscription receives a delta.
-;; `take!` blocks for the next delta to arrive.
-(do
-  (tc/transact conn [{:name "Ivan"}])
-  (tc/take! sub))
+;; transact a name
+(tc/transact conn [{:name "Ivan"}])
+;; => {:tx-id 2,
+;;     :system-time
+;;     #object[java.time.Instant 0x41c698cf "2026-11-22T13:23:22.647641Z"],
+;;     :committed? true}
+
+;; take the changes
+(tc/take! sub)
 ;; => [[[8796093022208 "Ivan"] 1]]
 
 ;; The 2-arity bounds the wait and returns ::timeout when nothing changed.
