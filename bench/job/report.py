@@ -5,8 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 
-FORMAT_VERSION = 4
-
+FORMAT_VERSION = 1
 
 def read_json(path, default=None):
     return json.loads(path.read_text()) if path.exists() else default
