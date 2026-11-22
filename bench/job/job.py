@@ -42,8 +42,8 @@ def command(args, **kwargs):
     return subprocess.run([str(a) for a in args], cwd=ROOT, check=True, **kwargs)
 
 
-def capture(args):
-    return command(args, stdout=subprocess.PIPE, text=True, timeout=30).stdout.strip()
+def capture(args, env=None):
+    return command(args, env=env, stdout=subprocess.PIPE, text=True, timeout=30).stdout.strip()
 
 
 def digest(path):
@@ -84,7 +84,7 @@ def prepare(args):
         }
         for table in TABLES:
             (directory / f"{table}.csv").write_text(rows.get(table, ""))
-        write_json(directory / "fixture.json", {"fixture": True, "version": 2})
+        write_json(directory / "fixture.json", {"fixture": True, "version": 1})
     elif args.download_data:
         directory = Path(args.data_dir).resolve()
         directory.mkdir(parents=True, exist_ok=True)
@@ -163,7 +163,7 @@ def stop_services(state, remove=False):
         disk = {}
         for service, path in [("rustfs", "/data"), ("triplox", "/var/lib/triplox")]:
             try:
-                disk[service + "-kilobytes"] = int(capture(base + ["exec", "-T", service, "du", "-sk", path]).split()[0])
+                disk[service + "-kilobytes"] = int(capture(base + ["exec", "-T", service, "du", "-sk", path], env=environment).split()[0])
             except (subprocess.SubprocessError, ValueError, IndexError):
                 disk[service + "-kilobytes"] = None
         if any(value is not None for value in disk.values()):
@@ -254,7 +254,7 @@ def run(args):
                  "verify-expected": not (Path(args.data_dir) / "fixture.json").exists()})
     files = [p for p in ROOT.rglob("*") if p.is_file() and "__pycache__" not in p.parts and
              p.relative_to(ROOT).parts[0] not in {"runs", "state", "data", "downloads", "disks.d", "target", "classes", "__pycache__", ".cpcache"}]
-    manifest = {"format-version": 4, "run-id": run_id, "config": base,
+    manifest = {"format-version": 1, "run-id": run_id, "config": base, "engines": engines,
                 "git-revision": capture(["git", "rev-parse", "HEAD"]),
                 "git-status": capture(["git", "status", "--short"]),
                 "tracked-diff-sha256": hashlib.sha256(capture(["git", "diff", "HEAD"]).encode()).hexdigest(),

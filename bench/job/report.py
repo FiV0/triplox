@@ -19,6 +19,8 @@ def report(root):
     if manifest.get("format-version") != FORMAT_VERSION:
         raise ValueError(f"Unsupported run format {manifest.get('format-version')}; expected {FORMAT_VERSION}")
     summaries, queries, answers, mismatches, problems = [], [], {}, [], []
+    if manifest.get("status") != "complete":
+        problems.append(f"Run status is {manifest.get('status')}")
     configurations = []
     incremental_verified = False
     verified_against = None
@@ -66,6 +68,7 @@ def report(root):
                     problems.append(f"{directory.name}: incremental answer verification did not complete")
     if not summaries:
         problems.append("No engine artifacts")
+    problems.extend(f"{engine}: missing artifacts" for engine in manifest.get("engines", []) if engine not in answers)
     if configurations and any(c != configurations[0] for c in configurations):
         raise ValueError("Refusing to compare incompatible workload configurations")
     if len(answers) > 1:
