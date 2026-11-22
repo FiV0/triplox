@@ -20,20 +20,18 @@
   (let [{:keys [query-ids output measurements timeout-ms verify-expected]} config
         pass-start (when measured? (System/nanoTime))
         db ((:db-fn engine))
-        results (try
-                  (mapv (fn [id]
-                          (println (if measured? "measure" "warmup") id)
-                          (let [start (when measured? (System/nanoTime))]
-                            (try
-                              (let [rows (bounded executor timeout-ms #((:query-fn engine) db id))]
-                                [id rows (when measured? (milliseconds start))])
-                              (catch Throwable error
-                                (artifacts/append! measurements
-                                                   {:phase (if measured? "query" "warmup")
-                                                    :query id :status "failed"
-                                                    :message (.getMessage error)})
-                                (throw error))))) query-ids)
-                  (finally (when-let [close (:close-db! engine)] (close db))))
+        results (mapv (fn [id]
+                        (println (if measured? "measure" "warmup") id)
+                        (let [start (when measured? (System/nanoTime))]
+                          (try
+                            (let [rows (bounded executor timeout-ms #((:query-fn engine) db id))]
+                              [id rows (when measured? (milliseconds start))])
+                            (catch Throwable error
+                              (artifacts/append! measurements
+                                                 {:phase (if measured? "query" "warmup")
+                                                  :query id :status "failed"
+                                                  :message (.getMessage error)})
+                              (throw error))))) query-ids)
         pass-ms (when measured? (milliseconds pass-start))]
 
     (when measured?
@@ -65,25 +63,23 @@
 
 (defn- verify-views! [engine executor {:keys [output measurements timeout-ms]} snapshots]
   (let [db ((:db-fn engine))]
-    (try
-      (doseq [[id {:keys [rows]}] snapshots]
-        (let [standard (artifacts/normalized
-                        (bounded executor timeout-ms #((:query-fn engine) db id)))
-              incremental (artifacts/normalized rows)]
-          (when-not (= standard incremental)
-            (let [file (io/file output "mismatches" (str id ".edn"))]
-              (io/make-parents file)
-              (spit file (pr-str {:standard standard :incremental incremental})))
+    (doseq [[id {:keys [rows]}] snapshots]
+      (let [standard (artifacts/normalized
+                      (bounded executor timeout-ms #((:query-fn engine) db id)))
+            incremental (artifacts/normalized rows)]
+        (when-not (= standard incremental)
+          (let [file (io/file output "mismatches" (str id ".edn"))]
+            (io/make-parents file)
+            (spit file (pr-str {:standard standard :incremental incremental})))
 
-            (artifacts/append! measurements
-                               {:phase "verification" :against "standard" :query id :status "failed"})
-            (throw (ex-info "Incremental result differs from standard query"
-                            {:query id})))))
+          (artifacts/append! measurements
+                             {:phase "verification" :against "standard" :query id :status "failed"})
+          (throw (ex-info "Incremental result differs from standard query"
+                          {:query id})))))
 
-      (artifacts/append! measurements
-                         {:phase "verification" :against "standard"
-                          :queries (count snapshots) :status "ok"})
-      (finally (when-let [close (:close-db! engine)] (close db))))))
+    (artifacts/append! measurements
+                       {:phase "verification" :against "standard"
+                        :queries (count snapshots) :status "ok"})))
 
 (defn- save-views! [{:keys [output measurements verify-expected]} snapshots]
   (doseq [[id {:keys [rows tx-key]}] snapshots]
@@ -172,11 +168,9 @@
       (let [start (System/nanoTime)
             loaded (load! engine config #(bounded executor timeout-ms (fn [] ((:transact! engine) %))))
             ingestion-ms (milliseconds start)
-            tx (:last-tx loaded)
-            snapshots (when incremental?
-                        (await-views! engine @views tx catchup-timeout-ms))
-            initial-ms (when incremental? (milliseconds start))]
+            tx (:last-tx loaded)]
 
+        ;; Check before the view wait, which needs a last tx.
         (when-not (pos? (reduce + (vals (:table-counts loaded))))
           (throw (ex-info "Dataset contains no rows" {})))
 
@@ -188,7 +182,9 @@
 
         ;; write down the measurements for view catchup; verify and save the views.
         (if incremental?
-          (let [catchup-ms (- initial-ms ingestion-ms)]
+          (let [snapshots (await-views! engine @views tx catchup-timeout-ms)
+                initial-ms (milliseconds start)
+                catchup-ms (- initial-ms ingestion-ms)]
             (artifacts/append! measurements
                                {:phase "initial" :status "ok" :ingestion-ms ingestion-ms
                                 :catchup-ms catchup-ms :elapsed-ms initial-ms

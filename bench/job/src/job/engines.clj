@@ -1,6 +1,7 @@
 (ns job.engines
   (:require [clojure.java.io :as io]
             [datalevin.core :as d]
+            [datalevin.query :as datalevin-query]
             [job.data :as data]
             [job.queries :as queries]
             [job.source :as source]
@@ -38,7 +39,10 @@
     {:schema! (constantly nil)
      :load! load!
      :db-fn #(deref db)
-     :query-fn (fn [db id] (mapv vec (d/q (get queries/queries id) db)))
+     ;; Datalevin caches query results by default, so the measured pass would time cache hits after warmup.
+     :query-fn (fn [db id]
+                 (binding [datalevin-query/*cache?* false]
+                   (mapv vec (d/q (get queries/queries id) db))))
      :close! #(d/close-db @db)}))
 
 (defn- triplox [{:keys [host port]}]
