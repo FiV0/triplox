@@ -70,15 +70,17 @@ def benchmark(args, benchmark_args):
     server = client = None
     with binary.open("rb") as executable:
         digest = hashlib.file_digest(executable, "sha256").hexdigest()
+    # The server has no memory limit. Its DBSP RSS budget is 75% of host RAM.
+    server_rss_mib = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // 4 * 3 // 2**20
     metadata = {
         "runtime": "pooled", "foreground_threads": 8, "merger_threads": 2,
         "shared_cache_mib": 4096, "cdc_poll_ms": 200,
         "remote_flush_us": 100, "storage": "RustFS", "log": "local file",
         "rustfs_image": RUSTFS_IMAGE, "server_binary": str(binary),
         "server_sha256": digest,
-        "server_cpu_quota": None, "server_memory_mib": 12288,
+        "server_cpu_quota": None, "server_memory_mib": None,
         "client_cpu_quota": 2.0, "client_memory_mib": 2048,
-        "combined_memory_mib": 15104,
+        "combined_memory_mib": server_rss_mib + 2048 + 768,
         "rustfs_cpu_quota": 0.25, "rustfs_memory_mib": 768,
         "revision": output("git", "-C", str(REPO), "rev-parse", "HEAD"),
         "dirty": bool(output("git", "-C", str(REPO), "status", "--porcelain")),
@@ -123,11 +125,7 @@ def benchmark(args, benchmark_args):
         environment = {**os.environ, "TOKIO_WORKER_THREADS": "2", "TMPDIR": str(temporary),
                        "AUCTIONMARK_ENVIRONMENT": json.dumps(metadata)}
         with (directory / "server.log").open("w") as log:
-            server_command = ["systemd-run", "--user", "--scope", "--quiet",
-                              "-p", "MemoryMax=12G",
-                              "-p", "MemorySwapMax=0", "-p", "TasksMax=1024",
-                              "nice", "-n", "10", str(binary), str(config)]
-            server = subprocess.Popen(server_command, stdout=log, stderr=log,
+            server = subprocess.Popen([str(binary), str(config)], stdout=log, stderr=log,
                                       env=environment, start_new_session=True)
             wait_port(port, server)
             command = ["systemd-run", "--user", "--scope", "--quiet",

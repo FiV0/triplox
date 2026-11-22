@@ -37,22 +37,20 @@ configuration, JSON results, and local database files remain in
 `target/auctionmark-sync/<timestamp>/`. `--output-dir` must name a new directory.
 The default client timeout is 600 seconds, configurable with `--timeout`.
 
-Triplox runs in its own systemd scope with a **12 GiB hard memory limit** and no
-CPU quota set by the launcher. The JVM client has a separate scope with a two-core
-quota and 2 GiB memory limit; its heap remains capped at 768 MiB. RustFS has a separate
-0.25-core quota and 768 MiB memory limit. The total memory allowance is 14.75 GiB
-(15,104 MiB), which is also the launcher's combined sampled RSS threshold.
-Swapping is disabled in all three scopes/containers. Bucket creation uses a small
-short-lived `rc` container before the server starts. The launcher requires both
-systemd scopes to succeed. The direct Clojure command only samples RSS; it does
-not install these operating-system limits.
+Triplox runs as a plain process with **no memory or CPU limit** from the launcher. The
+JVM client has its own systemd scope with a two-core quota and 2 GiB memory limit; its
+heap remains capped at 768 MiB. RustFS has a separate 0.25-core quota and 768 MiB memory
+limit. The launcher's combined sampled RSS threshold is 75% of host RAM plus 2 GiB for
+the client and 768 MiB for RustFS. Swapping is disabled in the client scope and the
+RustFS container. Bucket creation uses a small short-lived `rc` container before the
+server starts. The launcher requires the client scope to succeed. The direct Clojure
+command only samples RSS; it does not install these operating-system limits.
 
 DBSP's process RSS pressure threshold is 75% of the smaller of host RAM and the
-tightest detected cgroup memory limit, including parent cgroups. With at least
-12 GiB of host RAM and no tighter parent limit, the server's 12 GiB scope sets
-this threshold to **9 GiB**. This is a soft pressure threshold for the whole
-Triplox process; the kernel enforces the 12 GiB hard limit. The server log records
-the detected threshold as `DBSP process RSS budget` in bytes.
+tightest detected cgroup memory limit, including parent cgroups. With no limit on the
+server, it is 75% of host RAM. This is a soft pressure threshold for the whole Triplox
+process; nothing enforces a hard limit. The server log records the detected threshold
+as `DBSP process RSS budget` in bytes.
 
 The server uses eight pooled DBSP foreground workers, two merger workers, and a
 **4 GiB shared cache**. This is a cache capacity, not preallocated memory or a cap
