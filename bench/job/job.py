@@ -1,0 +1,347 @@
+#!/usr/bin/env python3
+"""Isolated lifecycle and process runner for the JOB benchmark."""
+
+import argparse
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tarfile
+import threading
+import urllib.request
+import uuid
+
+ROOT = Path(__file__).resolve().parent
+JAR = ROOT / "target/job.jar"
+# Loop-mounted filesystems created by ./disks, keyed by the compose variable they back.
+DISK_MOUNTS = {"JOB_RUSTFS_DIR": ROOT / "disks.d/mnt/rustfs",
+               "JOB_SLATEDB_CACHE_DIR": ROOT / "disks.d/mnt/slatedb-cache"}
+
+
+def triplox_environment(config):
+    return dict(os.environ, JOB_TRIPLOX_PORT=str(config["port"]),
+                **{variable: str(mount / config["project"]) for variable, mount in DISK_MOUNTS.items()})
+ENGINES = ["datalevin", "triplox-standard", "triplox-incremental"]
+TABLES = "comp_cast_type company_type kind_type link_type role_type info_type movie_link aka_name aka_title company_name complete_cast keyword char_name movie_companies movie_info movie_info_idx movie_keyword name person_info title cast_info".split()
+
+
+def write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2) + "\n")
+
+
+def command(args, **kwargs):
+    return subprocess.run([str(a) for a in args], cwd=ROOT, check=True, **kwargs)
+
+
+def capture(args, env=None):
+    return command(args, env=env, stdout=subprocess.PIPE, text=True, timeout=30).stdout.strip()
+
+
+def digest(path):
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def download(url, target):
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_suffix(target.suffix + ".part")
+        print(f"Downloading {url}", flush=True)
+        urllib.request.urlretrieve(url, temporary)
+        temporary.replace(target)
+    return target
+
+
+def build(task):
+    command(["clojure", "-T:build", task])
+
+
+def prepare(args):
+    if args.fixture:
+        directory = Path(args.data_dir).resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        if any(directory.glob("*.csv")):
+            raise RuntimeError("Fixture destination already contains CSV files")
+        rows = {
+            "company_type": "1,production companies\n",
+            "kind_type": "1,movie\n",
+            "link_type": "1,follows\n",
+            "company_name": "1,Film Company,[us],,,\n",
+            "title": "1,Money Movie,,1,1998,,,,,,\n2,Second Movie,,1,2001,,,,,,\n",
+            "keyword": "1,sequel,,\n",
+            "movie_keyword": "1,1,1\n",
+            "movie_link": "1,1,2,1\n",
+            "movie_companies": "1,1,1,1,\n2,2,1,1,(presents)\n",
+        }
+        for table in TABLES:
+            (directory / f"{table}.csv").write_text(rows.get(table, ""))
+        write_json(directory / "fixture.json", {"fixture": True, "version": 1})
+    elif args.download_data:
+        directory = Path(args.data_dir).resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        if any(directory.glob("*.csv")):
+            raise RuntimeError("Data destination already contains CSV files")
+        archive = download("https://event.cwi.nl/da/job/imdb.tgz", ROOT / "downloads/imdb.tgz")
+        with tarfile.open(archive) as tar:
+            for member in tar.getmembers():
+                if member.isfile() and Path(member.name).name in {f"{t}.csv" for t in TABLES}:
+                    with tar.extractfile(member) as source, (directory / Path(member.name).name).open("wb") as target:
+                        shutil.copyfileobj(source, target)
+        write_json(directory / "archive.json", {"sha256": digest(archive)})
+    if args.build_triplox:
+        command(["docker", "compose", "-f", ROOT / "compose.yml", "build",
+                 "--build-arg", f"GIT_SHA={capture(['git', 'rev-parse', 'HEAD'])}", "triplox"],
+                # The bind-mount directories are only needed to run, not to build.
+                env=dict(os.environ, **{variable: "/unused" for variable in DISK_MOUNTS}))
+    build("uber")
+
+
+def require_free_port(port):
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", port))
+
+
+def start_services(config):
+    state = Path(config["state-dir"])
+    state.mkdir(parents=True, exist_ok=True)
+    owner = state / "owner.json"
+    if owner.exists():
+        raise RuntimeError(f"State directory is already owned: {state}")
+    write_json(owner, config)
+    engine = config["engine"]
+    if engine.startswith("triplox"):
+        require_free_port(config["port"])
+        unmounted = [str(mount) for mount in DISK_MOUNTS.values() if not os.path.ismount(mount)]
+        if unmounted:
+            raise RuntimeError(f"Not mounted: {', '.join(unmounted)}; run `sudo ./disks setup` first")
+        environment = triplox_environment(config)
+        disks = {}
+        for variable, mount in DISK_MOUNTS.items():
+            directory = Path(environment[variable])
+            directory.mkdir()
+            # The containers write as their own users.
+            directory.chmod(0o777)
+            disks[mount.name] = {"directory": str(directory),
+                                 "mount": json.loads(capture(["findmnt", "-J", "-T", str(directory)]))}
+        write_json(Path(config["output"]) / "disks.json", disks)
+        command(["docker", "compose", "-f", ROOT / "compose.yml", "-p", config["project"], "up", "-d", "--wait"], env=environment)
+        ids = capture(["docker", "ps", "-q", "--filter", f"label=com.docker.compose.project={config['project']}"]).split()
+        write_json(Path(config["output"]) / "containers.json", json.loads(capture(["docker", "inspect", *ids])))
+
+
+def stop_services(state, remove=False):
+    state = Path(state).resolve()
+    if not state.is_relative_to((ROOT / "state").resolve()):
+        raise RuntimeError("Cleanup is limited to bench/job/state")
+    config = json.loads((state / "owner.json").read_text())
+    if config["engine"].startswith("triplox"):
+        environment = triplox_environment(config)
+        base = ["docker", "compose", "-f", ROOT / "compose.yml", "-p", config["project"]]
+        with (Path(config["output"]) / "compose.log").open("w") as log:
+            command(base + ["logs", "--no-color"], env=environment, stdout=log)
+        disk = {}
+        for service, path in [("rustfs", "/data"), ("triplox", "/var/lib/triplox")]:
+            try:
+                disk[service + "-kilobytes"] = int(capture(base + ["exec", "-T", service, "du", "-sk", path], env=environment).split()[0])
+            except (subprocess.SubprocessError, ValueError, IndexError):
+                disk[service + "-kilobytes"] = None
+        if any(value is not None for value in disk.values()):
+            write_json(Path(config["output"]) / "container-disk.json", disk)
+        command(base + ["down"] + (["--volumes"] if remove else []), env=environment)
+        if remove:
+            for variable, mount in DISK_MOUNTS.items():
+                if Path(environment[variable]).exists():
+                    # Files belong to the container users, so delete them from a container.
+                    command(["docker", "run", "--rm", "--user", "root", "--entrypoint", "rm",
+                             "-v", f"{mount}:/disk", os.environ.get("JOB_TRIPLOX_IMAGE", "triplox:job-benchmark"),
+                             "-rf", f"/disk/{config['project']}"])
+    if remove:
+        shutil.rmtree(state)
+
+
+def rss_tree(pid):
+    try:
+        status = Path(f"/proc/{pid}/status").read_text().splitlines()
+        rss = next((int(line.split()[1]) * 1024 for line in status if line.startswith("VmRSS:")), 0)
+        children = Path(f"/proc/{pid}/task/{pid}/children").read_text().split()
+        return rss + sum(rss_tree(child) for child in children)
+    except (OSError, ProcessLookupError):
+        return 0
+
+
+def monitor(config, process, stop):
+    with (Path(config["output"]) / "resources.jsonl").open("w") as output:
+        while not stop.is_set():
+            sample = {"at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                      "runner-rss-bytes": rss_tree(process.pid)}
+            if config["engine"].startswith("triplox"):
+                try:
+                    ids = capture(["docker", "ps", "-q", "--filter", f"label=com.docker.compose.project={config['project']}"]).split()
+                    if ids:
+                        stats = capture(["docker", "stats", "--no-stream", "--format", "{{json .}}", *ids])
+                        sample["containers"] = [json.loads(line) for line in stats.splitlines()]
+                except (subprocess.SubprocessError, ValueError):
+                    sample["container-sampling-error"] = True
+            output.write(json.dumps(sample) + "\n")
+            output.flush()
+            stop.wait(1)
+
+
+def run_process(config):
+    engine = config["engine"]
+    output = Path(config["output"])
+    config_file = output / "config.json"
+    write_json(config_file, config)
+    args = ["java", f"-Xmx{config['heap']}", "-jar", JAR, config_file]
+    with (output / "runner.log").open("w") as log:
+        process = subprocess.Popen(args, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                                   start_new_session=True)
+        stop = threading.Event()
+        sampler = threading.Thread(target=monitor, args=(config, process, stop), daemon=True)
+        sampler.start()
+        try:
+            code = process.wait(timeout=config["run-timeout-seconds"])
+            if code:
+                raise RuntimeError(f"{engine} exited with {code}; see {output / 'runner.log'}")
+        except BaseException:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+            raise
+        finally:
+            stop.set()
+            sampler.join(timeout=10)
+
+
+def run(args):
+    engines = ENGINES if args.engine == "all" else (ENGINES[:1] if args.engine == "baselines" else [args.engine])
+    if args.command == "up" and len(engines) != 1:
+        raise RuntimeError("up requires one --engine")
+    if args.command == "up" and args.engine == "datalevin":
+        raise RuntimeError("Datalevin is embedded; use run instead of up")
+    build("uber")
+    run_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
+    root = ROOT / "runs" / run_id
+    root.mkdir(parents=True)
+    base = {key.replace("_", "-"): value for key, value in vars(args).items()
+            if not isinstance(value, Path)}
+    base.update({"data-dir": str(Path(args.data_dir).resolve()), "host": "127.0.0.1",
+                 "verify-expected": not (Path(args.data_dir) / "fixture.json").exists()})
+    files = [p for p in ROOT.rglob("*") if p.is_file() and "__pycache__" not in p.parts and
+             p.relative_to(ROOT).parts[0] not in {"runs", "state", "data", "downloads", "disks.d", "target", "classes", "__pycache__", ".cpcache"}]
+    manifest = {"format-version": 1, "run-id": run_id, "config": base, "engines": engines,
+                "git-revision": capture(["git", "rev-parse", "HEAD"]),
+                "git-status": capture(["git", "status", "--short"]),
+                "tracked-diff-sha256": hashlib.sha256(capture(["git", "diff", "HEAD"]).encode()).hexdigest(),
+                "benchmark-files": {str(p.relative_to(ROOT)): digest(p) for p in sorted(files)},
+                "machine": {"platform": platform.platform(), "cpus": os.cpu_count(),
+                            "meminfo": Path("/proc/meminfo").read_text(),
+                            "disk-free-bytes": shutil.disk_usage(ROOT).free},
+                "versions": {"datalevin": "1.1.0", "clojure": "1.12.5"},
+                "java": command(["java", "-version"], capture_output=True, text=True).stderr.strip(),
+                "cpu": Path("/proc/cpuinfo").read_text(),
+                "warmup": "One full selected-query pass; same JVM, connection and database; normal caches enabled",
+                "status": "running"}
+    write_json(root / "manifest.json", manifest)
+    print(f"Run artifacts: {root}", flush=True)
+    failures = []
+    try:
+        for engine in engines:
+            output = root / engine
+            output.mkdir()
+            state = ROOT / "state" / f"{run_id}-{engine}"
+            config = dict(base, engine=engine, output=str(output), project=f"job-{run_id.lower()}-{engine}",
+                          **{"state-dir": str(state)})
+            write_json(output / "config.json", config)
+            keep_running = False
+            try:
+                start_services(config)
+                if args.command == "up":
+                    keep_running = True
+                    print(f"Service state: {state}", flush=True)
+                    return
+                print(f"Running {engine}; log: {output / 'runner.log'}", flush=True)
+                run_process(config)
+            except Exception as error:
+                failures.append(f"{engine}: {error}")
+                write_json(output / "status.json", {"status": "failed", "message": str(error)})
+                print(failures[-1], file=sys.stderr, flush=True)
+            finally:
+                if not keep_running and (state / "owner.json").exists():
+                    stop_services(state)
+                    write_json(output / "disk.json", {"state-bytes": int(capture(["du", "-sb", state]).split()[0])})
+    except BaseException as error:
+        failures.append(str(error) or type(error).__name__)
+        raise
+    finally:
+        manifest["status"] = "failed" if failures else ("services-running" if args.command == "up" else "complete")
+        manifest["failures"] = failures
+        write_json(root / "manifest.json", manifest)
+    if args.command == "run":
+        from report import report
+        comparison_ok = report(root)
+        if failures or not comparison_ok:
+            manifest["status"] = "failed"
+            write_json(root / "manifest.json", manifest)
+            raise RuntimeError("Run failed or result comparison found mismatches; artifacts preserved")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("command", choices=["prepare", "up", "run", "report", "down", "test"])
+    parser.add_argument("--engine", choices=["all", "baselines"] + ENGINES, default="all")
+    parser.add_argument("--data-dir", default=str(ROOT / "data"))
+    parser.add_argument("--fixture", action="store_true")
+    parser.add_argument("--download-data", action="store_true")
+    parser.add_argument("--build-triplox", action="store_true")
+    parser.add_argument("--queries", default="all")
+    parser.add_argument("--batch-size", type=int, default=1000)
+    parser.add_argument("--timeout-ms", type=int, default=600000)
+    parser.add_argument("--catchup-timeout-ms", type=int, default=600000)
+    parser.add_argument("--run-timeout-seconds", type=int, default=86400)
+    parser.add_argument("--heap", default="4g")
+    parser.add_argument("--port", type=int, default=15490)
+    parser.add_argument("--runs", type=Path)
+    parser.add_argument("--state", type=Path)
+    parser.add_argument("--remove", action="store_true")
+    parser.add_argument("--ingest-only", action="store_true", help="Infrastructure check without queries or performance scores")
+    args = parser.parse_args()
+    if min(args.batch_size, args.timeout_ms, args.catchup_timeout_ms) < 1:
+        parser.error("batch size and timeouts must be positive")
+    if args.command == "prepare":
+        prepare(args)
+    elif args.command == "test":
+        build("javac")
+        command(["clojure", "-M:test"])
+    elif args.command == "down":
+        if not args.state:
+            parser.error("down requires --state")
+        stop_services(args.state, args.remove)
+    elif args.command == "report":
+        if not args.runs:
+            parser.error("report requires --runs")
+        from report import report
+        if not report(args.runs.resolve()):
+            raise RuntimeError("Run is incomplete or answers differ")
+    else:
+        run(args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (Exception, KeyboardInterrupt) as error:
+        print(f"JOB: {error}", file=sys.stderr)
+        sys.exit(1)

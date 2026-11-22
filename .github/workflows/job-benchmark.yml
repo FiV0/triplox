@@ -1,0 +1,102 @@
+name: JOB Benchmark
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'website/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'website/**'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bench/job
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - name: Install Clojure CLI
+        uses: DeLaGuardo/setup-clojure@6d46099eae24853c33c0482f2bb54edf4f1a4c74 # 13.7.0
+        with:
+          cli: 1.12.5.1664
+
+      - name: Cache Clojure dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+          key: job-clojure-${{ runner.os }}-${{ hashFiles('bench/job/deps.edn', 'triplox-jvm/deps.edn') }}
+          restore-keys: job-clojure-${{ runner.os }}-
+
+      # Compiles the Java sources, then runs the Clojure unit tests.
+      - name: Run unit tests
+        run: ./job.py test
+
+  integration-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bench/job
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      # Shares the cache with the jvm-test job in ci.yml, which runs the same build.
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: dev-server
+
+      - name: Build server
+        working-directory: .
+        run: cargo build
+
+      - name: Start dev server
+        working-directory: .
+        run: |
+          cargo run -- config/triplox-dev.toml &
+          for i in $(seq 1 30); do nc -z localhost 5490 && break || sleep 1; done
+
+      - name: Set up Java 25
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - name: Install Clojure CLI
+        uses: DeLaGuardo/setup-clojure@6d46099eae24853c33c0482f2bb54edf4f1a4c74 # 13.7.0
+        with:
+          cli: 1.12.5.1664
+
+      - name: Cache Clojure dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.gitlibs
+          key: job-clojure-${{ runner.os }}-${{ hashFiles('bench/job/deps.edn', 'triplox-jvm/deps.edn') }}
+          restore-keys: job-clojure-${{ runner.os }}-
+
+      - name: Compile Java sources
+        run: clojure -T:build javac
+
+      - name: Run integration tests
+        run: clojure -M:integration-test
