@@ -303,8 +303,7 @@
                 :feldera-revision "1d81c0323e96a0cbc9e50e584babc112e5cfdb16"
                 :environment (some-> (System/getenv "AUCTIONMARK_ENVIRONMENT") (json/read-str :key-fn keyword))
                 :sampled-processes (keys pids)}]
-    (with-open [conn (tc/connect (:host opts) (:port opts)
-                                 {:subscription-thread-factory (.factory (Thread/ofVirtual))})]
+    (with-open [conn (tc/connect (:host opts) (:port opts))]
       (let [fixture (live/load-fixture! conn opts)]
         (loop [[n & more] (:stages opts)
                results []]

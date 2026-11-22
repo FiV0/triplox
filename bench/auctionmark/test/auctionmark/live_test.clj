@@ -6,8 +6,7 @@
 
 (defn connect []
   (tc/connect (System/getProperty "triplox.host" "localhost")
-              (Integer/parseInt (System/getProperty "triplox.port" "5490"))
-              {:subscription-thread-factory (.factory (Thread/ofVirtual))}))
+              (Integer/parseInt (System/getProperty "triplox.port" "5490"))))
 
 (defn assert-oracle
   "Every descriptor's query result matches the model."
