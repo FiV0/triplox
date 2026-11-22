@@ -1,287 +1,142 @@
 # JOB benchmark
 
-Run the 113 Join Order Benchmark queries ported from Datalevin against
-Datalevin, Triplox standard queries, and Triplox incremental queries. The source, schema, numeric ID offsets, and expected answers are
-vendored; no sibling Datalevin checkout is needed. See [NOTICE.md](NOTICE.md).
+Run all commands from this directory. Paths that you give to `./job.py` start
+from the working directory of your shell. See [NOTICE.md](NOTICE.md) for the
+sources of the vendored files.
 
-Build the server from this checkout before running Triplox queries. The
-Triplox client comes from `../../triplox-jvm` as source (see [Development](#development)).
+## Separate filesystems for Triplox runs
 
-## Prerequisites
+Triplox runs must keep the RustFS data and the SlateDB disk cache on separate
+loop-mounted ext4 filesystems. The Triplox file log stays on the root
+filesystem. If they share one filesystem, each fsync of the file log can wait
+for gigabytes of RustFS and cache writes.
 
-Linux, Python 3.11+, JDK 21+, Clojure CLI, and Docker with Compose v2.
-Building the Triplox server uses the repository Dockerfile. Internet
-access is needed for the initial dependency/image downloads. Use a machine
-with room for the CSVs, archive, Docker build cache, and a separate persisted
-database for every engine and repetition. The full dataset is not downloaded
-implicitly.
-
-Run commands from this directory. Paths supplied to the launcher resolve from
-your shell's working directory.
-
-### Separate filesystems for Triplox runs
-
-Triplox runs keep RustFS's data and the SlateDB disk cache on their own
-loop-mounted ext4 filesystems, so their writes do not share a journal or
-page-cache writeback with the Triplox file log, which stays on the root
-filesystem. Without this, every file log fsync can wait behind gigabytes of
-RustFS and cache writes. Create and mount the images once per boot:
+Create and mount the images once after each boot:
 
 ```bash
 sudo ./disks setup    # 70G rustfs.img + 20G slatedb-cache.img under disks.d/
 ./disks status
 ```
 
-Sizes can be changed on first setup with `JOB_RUSTFS_DISK_SIZE` and
-`JOB_SLATEDB_CACHE_DISK_SIZE`. The images are preallocated, and the loop devices
-use direct I/O. `./job.py` refuses to start Triplox runs without the mounts and
-records them in `<engine>/disks.json`; `./job.py down --remove` deletes the run's
-directories on them. `sudo ./disks teardown [--delete]` unmounts the images (and
-deletes them). The filesystems still share the physical drive, so a device cache
-flush is not isolated; use separate drives for full isolation.
+To change the sizes on the first setup, set `JOB_RUSTFS_DISK_SIZE` and
+`JOB_SLATEDB_CACHE_DISK_SIZE`. `./job.py` does not start a Triplox run if the
+mounts are missing. It writes the mounts to `<engine>/disks.json`.
+
+To unmount the images, run `sudo ./disks teardown`. To also delete them, add
+`--delete`. The filesystems are on the same physical drive, so a device cache
+flush affects all of them. For full isolation, use separate drives.
+
+## Run on the fixture
+
+The fixture is a small generated dataset. Most of its query answers are empty,
+and its timings are not JOB results.
+
+To run the Datalevin baseline:
 
 ```bash
-cd bench/job
 ./job.py prepare --fixture --data-dir data/fixture --engine baselines
 ./job.py test
 ./job.py run --engine baselines --data-dir data/fixture
 ```
 
-This checks the Datalevin baseline, including the full cache warmup. The small fixture exercises only a few joins; most query answers
-are empty. Its timings are smoke-test output, not representative JOB results.
-
-Build this checkout and check all three modes:
+To build the Triplox server from this checkout and run all three modes:
 
 ```bash
 ./job.py prepare --build-triplox --engine all
-./job.py run --engine all --data-dir data/fixture \
-  --batch-size 1
+./job.py run --engine all --data-dir data/fixture --batch-size 1
 ```
 
-The fixture includes matches for queries 11a and 11b, whose missing-attribute
-checks translate to `(not [?mc :movie-companies/note _])`.
+## Run the integration test
 
-To check the final results of all three modes on witness data, start a dev
-server from the repository root (`cargo run -- config/triplox-dev.toml`) and
-run from this directory:
+The integration test compares the final results of all three modes on the
+witness data in [resources/job/witness.edn](resources/job/witness.edn). The
+witness data gives each of the 113 queries at least one answer.
 
-```bash
-clojure -M:integration-test
-```
+1. Run `./job.py test` to compile the Java sources.
+2. From the repository root, start a dev server with
+   `cargo run -- config/triplox-dev.toml`.
+3. From this directory, run `clojure -M:integration-test`.
 
-Run `./job.py test` first to compile the Java sources. Set `TRIPLOX_HOST` and
-`TRIPLOX_PORT` to override `127.0.0.1:5490`. Use the dev configuration, which
-gives each connection its own in-memory database.
-It registers all 113 views before batched ingestion, waits for the final
-loading transaction, and compares every query's incremental result with its
-standard Triplox result and the original Datalevin query. The Datalevin oracle
-uses uncached answers. No updates or deletions are added after loading.
+The test connects to `127.0.0.1:5490`. To use a different address, set
+`TRIPLOX_HOST` and `TRIPLOX_PORT`. You must use the dev configuration, because
+it gives each connection its own in-memory database.
 
-The test loads [resources/job/witness.edn](resources/job/witness.edn), a
-synthetic dataset of about 500 entities. A witness is a set of entities that
-gives a query at least one answer. The dataset holds one witness for each of
-the 113 queries, so every answer is nonempty. `job.witness` builds the witness
-from the query clauses. Each entity gets only the attributes that its patterns
-use, with values that satisfy the predicates. Leaf entities with the same
-attributes are shared between queries. If you change a query, run
-`clojure -M:witness` to write the file again. A unit test fails when
-the file is out of date or when a query has no answer in Datalevin. The
-witness data does not test answer values on the real IMDb data.
+If you change a query, run `clojure -M:witness` to write the witness file
+again. A unit test fails when the file is out of date.
 
-For the original IMDb snapshot:
+## Run on the IMDb data
 
 ```bash
 ./job.py prepare --download-data --data-dir data/imdb --engine all
 ./job.py run --engine all --data-dir data/imdb
 ```
 
-You can supply an existing directory containing all 21 original CSV files
-instead of downloading. Original-data runs check the final answers against
-the vendored Datalevin expectations. Generated fixtures carry `fixture.json`,
-which disables that check; cross-engine comparisons still run. A modified
-IMDb dataset needs its own expectations and should not be presented as the
-original JOB dataset.
+Instead of the download, you can give a directory that contains all 21
+original CSV files.
 
-Select `--engine datalevin`, `triplox-standard`, `triplox-incremental`,
-`baselines`, or `all`. `baselines` runs Datalevin. `all` runs the three modes
-sequentially with fresh state. Use `--queries 1a,11a,32a` for a subset; the
-manifest records the selection. Full-suite results require all 113 queries to
-finish successfully. Each invocation is one repetition; repeat the command
-for independent runs, retaining each run directory.
+## Run options
 
-## Development
+Use `--engine` to select what runs:
 
-The Triplox client is a `:local/root` dependency on `../../triplox-jvm`, so
-the benchmark always uses this checkout's client. `build.clj` compiles the
-client's Java sources and `java/job/CSVReader.java` into `classes/`.
+- `datalevin`, `triplox-standard`, or `triplox-incremental` runs one mode.
+- `baselines` runs Datalevin.
+- `all` runs the three modes one after the other, each with fresh state.
 
-- `clojure -T:build javac` compiles the Java sources only.
-- `clojure -M:dev` starts an nREPL server on a random free port and
-  writes the port to `.nrepl-port` (add `--port <n>` to pick one). No build step
-  is needed first: load `build.clj` and evaluate `(javac nil)` from its comment
-  block before you use `job.source` or the client.
-- `clojure -T:build uber` builds `target/job.jar`. `./job.py prepare` and `./job.py run`
-  build it, and `./job.py run` starts each engine with `java -jar target/job.jar`.
-  The jar manifest carries Datalevin's `--add-opens` flags; the `:test`,
-  `:integration-test` and `:dev` aliases read them from `datalevin.jvmopts`.
-- `clojure -T:build clean` deletes `target/`.
+Use `--queries 1a,11a,32a` to run a subset of the queries. Each invocation is
+one repetition. For independent runs, run the command again and keep each run
+directory.
 
-## What is measured
+The other options and their defaults are:
 
-| Mode | Score |
-|---|---|
-| Datalevin | Complete query pass after warmup |
-| Triplox standard | Complete query pass on loaded data |
-| Triplox incremental | Ingestion + final view catchup |
+- `--batch-size 1000`: The maximum number of source rows in one Triplox
+  transaction. Datalevin ignores it.
+- `--heap 4g`: The heap of the runner JVM.
+- `--timeout-ms 600000`: The deadline for each transaction, query, and
+  registration.
+- `--catchup-timeout-ms 600000`: The deadline for all incremental views to
+  apply the last loaded transaction.
+- `--run-timeout-seconds 86400`: The limit for each JVM process.
+- `--port 15490`: The local Triplox port. If the port is in use, the run fails.
 
-Datalevin loads the entire dataset, then execute one complete pass
-of the selected queries without measuring it. Only after that pass completes
-does measurement start. Warmup and measurement use the same JVM, connection,
-database value, query order, and query thread, with normal caches enabled.
-There is no cache flush or process restart between them. Warmup failure fails
-the run. Triplox standard has no explicit warmup; reports label this.
+To override the Triplox server image, set `JOB_TRIPLOX_IMAGE`. If you change
+the checkout, build the default image again.
 
-Every incremental query is registered before ingestion begins. Each client
-view continuously drains its subscription while batched transactions load the
-data. The last committed transaction supplies the target transaction key.
-Catchup ends when **every view has applied** through that key, including
-transactions that leave its result unchanged. Registration and schema setup
-are reported outside the score. Ingestion includes CSV parsing, transaction
-construction and transaction acknowledgments. Result serialization
-and verification happen after timed work.
+## Services
 
-This is deliberately an apples-to-pears comparison: warmed query execution on
-an already loaded database versus loading and maintaining all selected
-results together. Report both phases and engine cache/storage settings;
-these scores do not establish general query speedups or equal durability.
-JOB emphasizes multiway joins and optimization; the small aggregate outputs
-can also conceal substantial intermediate maintenance work.
-
-Once loading and catchup finish, incremental mode checks each final view once,
-outside the measured time, with no concurrent writes. On the full dataset it
-compares the view with the upstream expected answer. On a fixture, which has
-no expected answers, it runs the standard Triplox query against the same
-loaded database and compares its rows instead. A mismatch fails the run and
-saves both answers for diagnosis. This also runs with
-`--engine triplox-incremental` alone.
-
-Answers are saved once, under `answers/`. The benchmark ends there;
-it does not delete, restore, or modify data to test incremental maintenance.
-
-Default controls:
-
-- `--batch-size 1000`: maximum source rows per Triplox ingestion transaction.
-  Datalevin bulk-loads and ignores it.
-- `--heap 4g`: runner JVM heap.
-- `--timeout-ms 600000`: transaction, query, and registration deadlines. Query
-  interruption is best effort; the process exits on failure. Waiting for the
-  last loaded transaction to be indexed has no deadline.
-- `--catchup-timeout-ms 600000`: deadline for every incremental view to apply
-  the last loaded transaction, counted from the end of indexing.
-- `--run-timeout-seconds 86400`: outer limit for each JVM process.
-- `--port 15490`: local Triplox port. An occupied port fails instead of reusing
-  another service.
-
-Both engines read the CSVs through the same table readers, which turn each
-row into triples whose entity ID is the row ID plus a per-table offset. The
-engines load those triples differently:
-
-- Datalevin loads them the way Datalevin's own JOB-bench does. The offset IDs
-  become its entity IDs, and the triples go straight into `fill-db` as trusted
-  datoms, without transactions, tempids or upserts. `analyze` runs afterwards.
-- Triplox assigns its own entity IDs, so both Triplox modes go through the
-  portable loader. It stores the offset ID as `:job/id`, a unique-identity
-  attribute. Every entity and every reference becomes a tempid, which upserts
-  on `:job/id`. The loader adds stubs for references to rows that are not
-  loaded yet. Rows are submitted in transactions of at most `--batch-size`
-  rows.
-
-So the two engines do different loading work, and their load times are not
-comparable. `load.json` counts source rows and attempted datoms. For Triplox,
-that includes repeated identity assertions and stubs; it does not claim those
-are distinct writes.
-
-Datalevin runs the original query forms. Triplox gets portable variable
-names without dots, native scalar expressions
-and anchored regular expressions for `like`. Missing attributes use negation
-with `_` placeholders. These adaptations preserve intent but can affect query
-planning and cost. Each engine's actual query forms are saved in `queries.edn`.
-
-## Services and storage
-
-Datalevin 1.1.0 runs embedded with its database under `state/`.
-
-Triplox uses [compose.yml](compose.yml): a pinned RustFS image, bucket setup,
-and the image built from this checkout. Object storage, local log, cache, and
-incremental state use dedicated named volumes for each run. Only the Triplox
-client port is published, bound to localhost. The credentials in
-[config/triplox.toml](config/triplox.toml) are local benchmark defaults.
-The config sets a 100 ms CDC poll interval (server default: 200 ms); it only
-affects `triplox-incremental`, since the CDC loop starts with the first
-subscription. Incremental subscriptions share a pooled DBSP runtime from
-[FiV0/feldera PR #1](https://github.com/FiV0/feldera/pull/1) with eight foreground
-workers, two merger workers, and a 4 GiB shared cache.
-`JOB_TRIPLOX_IMAGE` overrides the server image for infrastructure diagnostics;
-container inspection records the actual image IDs. Rebuild the default image
-when the checkout changes.
-
-A query-free infrastructure check is also available:
+To test the infrastructure without queries:
 
 ```bash
 ./job.py run --engine datalevin --data-dir data/fixture --ingest-only
 ./job.py run --engine triplox-standard --data-dir data/fixture --ingest-only
 ```
 
-For manual service inspection, `./job.py up --engine triplox-standard` prints the owned state directory and
-leaves the service running. Normal `run` invocations stop their services on
-completion or failure, retain databases/volumes, and preserve logs. Cleanup is
-limited to the specific owned state directory:
+To start the services and keep them running for inspection, run
+`./job.py up --engine triplox-standard`. The command prints the state
+directory of the run.
+
+A normal `run` stops its services at the end, and it keeps the databases,
+volumes, and logs. To stop the services of a run:
 
 ```bash
 ./job.py down --state state/<run-id>-triplox-incremental --remove
 ```
 
-`--remove` deletes that run's database state and Compose volumes. Omit it to
-stop services while keeping storage. Run artifacts are retained either way.
+`--remove` deletes the database state and the Compose volumes of that run. It
+also deletes the directories of the run on the separate filesystems. Without
+`--remove`, the command stops the services and keeps the storage.
 
-## Saved results
+## Results
 
-Every invocation creates `runs/<UTC timestamp>-<random suffix>/`. Keep the
-whole directory as an immutable experiment artifact; regenerate derived
-reports with `./job.py report --runs runs/<run-id>`.
+Each invocation writes its results to `runs/<UTC timestamp>-<random suffix>/`.
+To make the reports again, run `./job.py report --runs runs/<run-id>`.
 
-- `manifest.json`: configuration, engine versions, Git revision, dirty status,
-  diff hash, benchmark source hashes, JVM and machine details, run status.
-- `<engine>/config.json`, `selection.json`, `queries.edn`: exact workload inputs.
-- `<engine>/measurements.jsonl`: raw phase/query timings and final verification status.
-  Successful warmup has no measured durations.
-- `<engine>/answers/<query>.edn`: normalized, sorted final answer sets.
-  Integer types are normalized.
-- `<engine>/mismatches/<query>.edn`: standard and incremental answers when
-  their comparison fails, or expected and actual answers when a result differs
-  from the upstream expected answer.
-- `<engine>/load.json`, `resources.jsonl`, `disk.json`: ingestion counts,
-  sampled process RSS/container statistics, and persisted state size.
-  Container runs also include `containers.json` and `container-disk.json`.
-  Resource sampling includes setup and warmup, not just measured query phases.
-- `<engine>/status.json`, `runner.log`, `compose.log`:
-  success/failure and diagnostic evidence.
-- `summary.csv`, `queries.csv`, `summary.md`, `comparison.json`: regenerated
-  summaries, per-query timings, missing or differing final answers, and whether
-  incremental answers were verified, and against what (`expected` or `standard`).
+## Development
 
-The reporter fails on incomplete runs, missing warmup, incompatible workload
-configurations, differing/missing answers, or missing
-answer verification for incremental runs. A single engine run can
-check the original expected answers; an incremental run on a fixture checks
-standard Triplox queries instead, but neither establishes cross-engine parity
-on its own.
-Ingestion-only reports explicitly omit query verification. The reporter only
-accepts the current run format (4); older run directories are rejected.
-Do not combine a failed/partial run into a full-suite performance score.
-
-Keep generated data, state, downloads, and runs out of Git. For published
-results, archive the run directory along with the corresponding source commit
-(and patch when dirty), and link the archive from your writeup. Store large
-artifacts in object storage rather than committing them. This preserves raw
-measurements and answers while allowing reports to evolve.
+- `clojure -T:build javac` compiles the Java sources into `classes/`.
+- `clojure -M:dev` starts an nREPL server on a free port and writes the port
+  to `.nrepl-port`. Add `--port <n>` to select the port. Before you use
+  `job.source` or the client, load `build.clj` and evaluate `(javac nil)` from
+  its comment block.
+- `clojure -T:build uber` builds `target/job.jar`. `./job.py prepare` and
+  `./job.py run` also build it.
+- `clojure -T:build clean` deletes `target/`.
