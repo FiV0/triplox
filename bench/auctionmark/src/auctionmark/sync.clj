@@ -1,6 +1,6 @@
 (ns auctionmark.sync
   "Bounded live-query experiment. Subscription results are checked against standard
-  queries when primed and at the end of each stage. Freshness is the time until the
+  queries when primed and at the end of the run. Freshness is the time until the
   last subscription reaches a probed transaction's tx-key."
   (:refer-clojure :exclude [run!])
   (:require [auctionmark.live :as live]
@@ -20,18 +20,17 @@
 (def options
   [[nil "--host HOST" "Triplox host" :default "localhost"]
    [nil "--port PORT" "Triplox port" :default 5477 :parse-fn parse-long]
-   [nil "--mode MODE" "smoke or capacity" :default "smoke"]
-   [nil "--stages COUNTS" "Comma-separated subscription counts" :parse-fn #(mapv parse-long (str/split % #","))]
-   [nil "--users N" "Fixture users" :default 20 :parse-fn parse-long]
-   [nil "--items N" "Fixture items" :default 100 :parse-fn parse-long]
+   [nil "--users N" "Fixture users" :default 200 :parse-fn parse-long]
+   [nil "--items N" "Fixture items" :default 1000 :parse-fn parse-long]
+   [nil "--subscriptions N" "Live queries, five per user" :default 1000 :parse-fn parse-long]
    [nil "--seed N" "Workload seed" :default 42 :parse-fn parse-long]
    [nil "--rate N" "Target committed transactions/second" :default 5.0 :parse-fn parse-double]
-   [nil "--warmup SECONDS" "Warmup per stage" :default 10.0 :parse-fn parse-double]
-   [nil "--duration SECONDS" "Measurement per stage" :default 30.0 :parse-fn parse-double]
+   [nil "--warmup SECONDS" "Writes before measurement" :default 10.0 :parse-fn parse-double]
+   [nil "--duration SECONDS" "Measured writes" :default 30.0 :parse-fn parse-double]
    [nil "--sla-ms MS" "Maximum p95 time until every subscription reaches a transaction" :default 250.0 :parse-fn parse-double]
    [nil "--probe-ms MS" "Interval between catch-up probes" :default 500 :parse-fn parse-long]
    [nil "--probe-timeout-ms MS" "Maximum wait for every subscription to reach a probe" :default 5000 :parse-fn parse-long]
-   [nil "--drain-ms MS" "Maximum wait at stage end for every subscription to catch up" :default 30000 :parse-fn parse-long]
+   [nil "--drain-ms MS" "Maximum wait at the end for every subscription to catch up" :default 30000 :parse-fn parse-long]
    [nil "--memory-mib N" "Combined sampled RSS limit" :default 8192 :parse-fn parse-long]
    [nil "--server-pid PID" "Server process to sample" :parse-fn parse-long]
    [nil "--storage-pid PID" "Object storage process to sample" :parse-fn parse-long]
@@ -39,23 +38,16 @@
    ["-h" "--help"]])
 
 (defn validate-options [opts]
-  (let [{:keys [mode users items warmup]} opts
-        stages (or (:stages opts) [5 20 50 100])
+  (let [{:keys [users items subscriptions warmup]} opts
         positive? #(and (number? %) (Double/isFinite (double %)) (pos? %))]
-    (when-not (and (#{"smoke" "capacity"} mode)
-                   (or (= "smoke" mode) (:stages opts))
-                   (seq stages)
-                   (every? positive? stages)
-                   (every? positive? (map opts [:port :users :items :rate :duration :sla-ms :probe-ms :probe-timeout-ms :drain-ms :memory-mib]))
+    (when-not (and (every? positive? (map opts [:port :users :items :subscriptions :rate :duration :sla-ms :probe-ms :probe-timeout-ms :drain-ms :memory-mib]))
                    (number? warmup)
                    (Double/isFinite (double warmup))
                    (<= 0 warmup)
                    (<= users items)
-                   (<= (apply max stages) (* 5 users))
-                   (or (= "capacity" mode) (<= (apply max stages) 100)))
-      (throw (ex-info "Invalid limits: capacity requires explicit stages; need items >= users >= subscriptions/5"
-                      {:options opts})))
-    (assoc opts :stages stages)))
+                   (<= subscriptions (* 5 users)))
+      (throw (ex-info "Invalid options: need items >= users >= subscriptions/5" {:options opts})))
+    opts))
 
 ;; ---------------------------------------------------------------------------
 ;; Subscriptions
@@ -222,7 +214,7 @@
         (error! tracker {:error :final-result-mismatch :query-id id :tx-key tx-key})))))
 
 ;; ---------------------------------------------------------------------------
-;; Stages
+;; Run
 
 (defn- start-sampler!
   "Sample process resources every 500ms while sampling is true."
@@ -242,21 +234,20 @@
      :p99 (at 0.99)
      :max (last values)}))
 
-(defn- failed-checks [n entries metrics resources opts]
+(defn- failed-checks [entries metrics resources opts]
   (let [p95 (get-in metrics [:catch-up-ms :p95])]
     (cond-> []
-      (not= n (count entries)) (conj :initialization)
+      (not= (:subscriptions opts) (count entries)) (conj :initialization)
       (seq (:errors metrics)) (conj :correctness-or-runtime)
       (nil? p95) (conj :no-probes)
       (and p95 (>= p95 (:sla-ms opts))) (conj :freshness)
       (< (:transactions-per-second metrics) (* 0.9 (:rate opts))) (conj :write-rate)
       (> (:combined-peak-rss-mib resources) (:memory-mib opts)) (conj :memory))))
 
-(defn run-stage!
-  "Run one stage with n subscriptions, then restore the fixture."
-  [conn fixture opts n pids]
-  (let [descriptors (live/queries (:users opts) (:items opts) n)
-        state (live/copy-state (:state fixture))
+(defn run-benchmark!
+  "Open the subscriptions, write through warmup and the measured period, then verify."
+  [conn state opts pids]
+  (let [descriptors (live/queries (:users opts) (:items opts) (:subscriptions opts))
         tracker (atom {:last-tx-id nil :transactions 0 :catch-up-ms [] :errors []})
         entries (atom [])
         running (atom true)
@@ -279,27 +270,23 @@
       (drain! @entries tracker opts)
       (verify-final! conn @entries tracker running)
       (catch Exception e
-        (error! tracker {:error :stage-aborted :message (.getMessage e)}))
+        (error! tracker {:error :run-aborted :message (.getMessage e)}))
       (finally
         (reset! sampling false)
         (.join sampler 2000)
         ;; Probes give up after probe-timeout-ms.
         (doseq [^Thread probe @probes]
           (.join probe))
-        (close-subscriptions! @entries running)
-        (try
-          (live/restore! conn (:tx-key fixture))
-          (catch Exception e
-            (error! tracker {:error :restore-failed :message (.getMessage e)})))))
+        (close-subscriptions! @entries running)))
     (let [{:keys [transactions catch-up-ms errors]} @tracker
           metrics {:committed-transactions transactions
                    :transactions-per-second (/ transactions (:duration opts))
                    :catch-up-ms (percentiles catch-up-ms)
                    :errors errors}
           resources (resources/summarize @samples)
-          failures (failed-checks n @entries metrics resources opts)]
+          failures (failed-checks @entries metrics resources opts)]
       (merge metrics
-             {:subscriptions n
+             {:subscriptions (:subscriptions opts)
               :unique-queries (count (set (map :query descriptors)))
               :passed? (empty? failures)
               :failed-checks failures
@@ -312,19 +299,19 @@
 ;; ---------------------------------------------------------------------------
 ;; Entry point
 
-(defn- print-stage [n result]
+(defn- print-result [result]
   (println (format "%4d subscriptions  %.2f tx/s  catch-up p95=%s ms (%d probes)  RSS=%.0f MiB  %s"
-                   n
+                   (:subscriptions result)
                    (:transactions-per-second result)
                    (get-in result [:catch-up-ms :p95])
                    (get-in result [:catch-up-ms :count])
                    (get-in result [:resources :combined-peak-rss-mib])
-                   (if (:passed? result) "PASS" "STOP")))
+                   (if (:passed? result) "PASS" "FAIL")))
   (when (seq (:failed-checks result))
     (println "Failed checks:" (:failed-checks result))))
 
 (defn run!
-  "Run stages in order, stopping at the first that fails."
+  "Load the fixture into a fresh database and run the benchmark once."
   [opts]
   (let [pids (cond-> {:client (.pid (ProcessHandle/current))}
                (:server-pid opts) (assoc :server (:server-pid opts))
@@ -336,17 +323,9 @@
                 :environment (some-> (System/getenv "AUCTIONMARK_ENVIRONMENT") (json/read-str :key-fn keyword))
                 :sampled-processes (keys pids)}]
     (with-open [conn (tc/connect (:host opts) (:port opts))]
-      (let [fixture (live/load-fixture! conn opts)]
-        (loop [[n & more] (:stages opts)
-               results []]
-          (if-not n
-            (assoc report :stages results :passed? true)
-            (let [result (run-stage! conn fixture opts n pids)
-                  results (conj results result)]
-              (print-stage n result)
-              (if (:passed? result)
-                (recur more results)
-                (assoc report :stages results :passed? false)))))))))
+      (let [result (run-benchmark! conn (live/load-fixture! conn opts) opts pids)]
+        (print-result result)
+        (merge report result)))))
 
 (defn -main [& args]
   (let [{:keys [options errors summary]} (cli/parse-opts args options)]

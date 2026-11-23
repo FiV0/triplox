@@ -8,11 +8,6 @@
   (tc/connect (System/getProperty "triplox.host" "localhost")
               (Integer/parseInt (System/getProperty "triplox.port" "5490"))))
 
-(defn assert-restored
-  "The schema's datoms are the same as at tx-key."
-  [conn tx-key]
-  (is (= (#'live/datoms (tc/db conn tx-key)) (#'live/datoms (tc/db conn)))))
-
 (defn- apply-next-delta! [{:keys [sub rows]}]
   (swap! rows live/apply-delta (tc/take! sub 5000)))
 
@@ -50,8 +45,8 @@
 
 (deftest live-queries-track-auction-changes
   (with-open [conn (connect)]
-    (let [{:keys [tx-key]} (live/load-fixture! conn {:users 2 :items 4 :seed 42})
-          ;; Watchlist of user 9, who only appears in a later transaction.
+    (live/load-fixture! conn {:users 2 :items 4 :seed 42})
+    (let [;; Watchlist of user 9, who only appears in a later transaction.
           empty-watchlist (assoc (nth (live/queries 10 4 50) 46) :id 10)
           descriptors (conj (live/queries 2 4 10) empty-watchlist)
           subs (mapv #(assoc % :sub (tc/subscribe conn (:query %)) :rows (atom {})) descriptors)]
@@ -69,16 +64,14 @@
             (.close sub))))
       ;; A late subscriber starts from the current result.
       (with-open [sub (tc/subscribe conn (:query (first descriptors)))]
-        (assert-primed conn {:sub sub :rows (atom {}) :query (:query (first descriptors))}))
-      (live/restore! conn tx-key)
-      (assert-restored conn tx-key))))
+        (assert-primed conn {:sub sub :rows (atom {}) :query (:query (first descriptors))})))))
 
 (deftest original-procedures-keep-subscriptions-current
   (with-open [conn (connect)]
-    (let [{:keys [state tx-key]} (live/load-fixture! conn {:users 2 :items 4 :seed 19})
+    (let [state (live/load-fixture! conn {:users 2 :items 4 :seed 19})
           writes (atom 0)
-          last-tx-id (atom (:tx-id tx-key))
-          working-state (assoc (live/copy-state state)
+          last-tx-id (atom 0)
+          working-state (assoc state
                                :transact (fn [c tx]
                                            (let [result (live/transact! c tx)]
                                              (reset! last-tx-id (:tx-id result))
@@ -98,9 +91,7 @@
         (finally
           (doseq [{:keys [sub]} subs]
             (.close sub))))
-      (is (pos? @writes))
-      (live/restore! conn tx-key)
-      (assert-restored conn tx-key))))
+      (is (pos? @writes)))))
 
 (deftest rejects-negative-client-weights
   (is (thrown? clojure.lang.ExceptionInfo (live/apply-delta {} [[[1] -1]]))))

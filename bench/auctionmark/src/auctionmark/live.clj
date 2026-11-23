@@ -5,8 +5,7 @@
             [clojure.walk :as walk]
             [xyz.triplox.api :as tc])
   (:import [java.util Random]
-           [java.util.concurrent TimeUnit]
-           [java.util.concurrent.atomic AtomicLong]))
+           [java.util.concurrent TimeUnit]))
 
 ;; ---------------------------------------------------------------------------
 ;; Queries
@@ -102,15 +101,6 @@
       (throw (ex-info "Workload transaction rejected" result)))
     result))
 
-(defn copy-state
-  "Copy procedure state so a run can mutate it without touching the fixture's."
-  [state]
-  (update-vals state (fn [v]
-                       (cond
-                         (instance? AtomicLong v) (AtomicLong. (.get ^AtomicLong v))
-                         (instance? clojure.lang.Atom v) (atom @v)
-                         :else v))))
-
 (def ^:private open-auction-ms (.toMillis TimeUnit/DAYS 30))
 
 (defn- open-all-items!
@@ -159,8 +149,9 @@
     (vec (concat watches bids comments))))
 
 (defn load-fixture!
-  "Reuse AuctionMark generators, with explicit sizes and populated live views."
-  [conn {:keys [users items seed] :or {users 20 items 100 seed 42}}]
+  "Reuse AuctionMark generators, with explicit sizes and populated live views. Returns the
+  procedure state."
+  [conn {:keys [users items seed] :or {users 200 items 1000 seed 42}}]
   (when-not (and (pos? users) (>= items users))
     (throw (ex-info "Need positive users and at least as many items" {:users users :items items})))
   (when (seq (tc/q (tc/db conn) '{:find [?e] :where [[?e :db/ident :item/id]]}))
@@ -175,35 +166,9 @@
     (tc/db conn (proc/generate-items! conn state rng items))
     (open-all-items! conn state users items)
     (let [activity (activity-docs state users items)
-          bid-counts (mapv (fn [u] {:db/id [:item/id u] :item/num-bids 1}) (range users))
-          result (transact! conn (into activity bid-counts))]
-      {:state state
-       :tx-key (select-keys result [:tx-id :system-time])})))
-
-(defn- datoms
-  "Every [e a v] of the schema's attributes in db."
-  [db]
-  (set (for [a (map :db/ident schema/schema-tx)
-             [e v] (tc/q db {:find '[?e ?v] :where [['?e a '?v]]})]
-         [e a v])))
-
-(defn restore!
-  "Transact the database back to its state at tx-key: undo attribute changes on the
-  entities that existed then, and retract the entities created since."
-  [conn tx-key]
-  (let [before (datoms (tc/db conn tx-key))
-        now (datoms (tc/db conn))
-        existed (set (map first before))
-        adds (remove now before)
-        ;; Attributes are cardinality-one, so an add already replaces the current value.
-        replaced (set (map (fn [[e a]] [e a]) adds))
-        retracts (for [[e a v :as d] now
-                       :when (and (existed e) (not (before d)) (not (replaced [e a])))]
-                   [:db/retract e a v])
-        created (for [e (distinct (map first now)) :when (not (existed e))]
-                  [:db/retractEntity e])]
-    (doseq [batch (partition-all 128 (concat (map #(into [:db/add] %) adds) retracts created))]
-      (transact! conn (vec batch)))))
+          bid-counts (mapv (fn [u] {:db/id [:item/id u] :item/num-bids 1}) (range users))]
+      (transact! conn (into activity bid-counts))
+      state)))
 
 ;; ---------------------------------------------------------------------------
 ;; Workload

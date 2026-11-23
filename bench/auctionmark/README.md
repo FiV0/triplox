@@ -130,12 +130,10 @@ cache_mib = 4096
 
 ### Workload
 
-The default fixture has 20 users and 100 items, generated from seed 42 using the
+The default fixture has 200 users and 1,000 items, generated from seed 42 using the
 AuctionMark branch's schema, generators, and write procedures. Initial views are
-populated with bids, watches, and unanswered questions. Every stage starts from the
-same logical fixture: after a stage, the driver compares the database with its state at
-the fixture's tx-key and transacts the difference back. Procedure pools reset between
-stages; wall-clock timestamps and random entity UUIDs are not byte-for-byte
+populated with bids, watches, and unanswered questions. The fixture needs a fresh
+database. Wall-clock timestamps and random entity UUIDs are not byte-for-byte
 reproducible.
 
 | Query | Parameter | Result |
@@ -159,38 +157,40 @@ The rate limiter acts on **actual submitted transactions**, including both write
 of a multi-transaction procedure. It adds seeded 10% pacing jitter to avoid aligning
 all writes with the CDC polling period. It does not generate catch-up bursts.
 
-The default stages are 5, 20, 50, and 100 subscriptions, at five committed
-transactions/second, with 10 seconds of warmup and 30 seconds of measurement each.
-The next stage runs only if the current stage has:
+A run opens `--subscriptions` live queries (default 1,000, five for each of the 200
+users), then writes at five committed transactions/second: 10 seconds of warmup
+(`--warmup`), then 30 seconds of measurement (`--duration`). With the defaults, every
+user has live queries, so most writes change at least one subscription. The run passes only if it has:
 
 - p95 catch-up time below 250 ms (see below);
 - at least 90% of the requested transaction rate;
 - correct primed and final results, and no failed subscriptions;
 - combined sampled RSS within the memory budget.
 
-A stage with no probes cannot pass. A probe that waits longer than five seconds
+A run with no probes cannot pass. A probe that waits longer than five seconds
 (`--probe-timeout-ms`), or a final catch-up that waits longer than 30 seconds
-(`--drain-ms`), fails the stage. A failed run exits nonzero and retains its report. A passing smoke
-run establishes only the tested counts for this fixture and machine, not a maximum
-capacity. Larger runs require explicit `--mode capacity` and subscription stages,
-with enough users (at least subscriptions/5) and items (at least users):
+(`--drain-ms`), fails the run. A failed run exits nonzero and retains its report. A
+passing run establishes only the tested count for this fixture and machine, not a
+maximum capacity. Subscriptions need at least subscriptions/5 users and at least as
+many items as users:
 
 ```bash
 python3 bench/auctionmark/run-sync.py --timeout 600 -- \
-  --mode capacity --stages 100,200 --users 40 --items 200 \
+  --users 400 --items 2000 --subscriptions 2000 \
   --rate 5 --warmup 10 --duration 30
 ```
 
-Do not run larger stages automatically after a failed smoke test. For a short
-functional check, override `--stages 5 --warmup 1 --duration 3`; such a small sample
-is not a freshness or capacity conclusion.
+For a short functional check, use `--users 20 --items 100 --subscriptions 100
+--warmup 1 --duration 3`; such a small sample is not a freshness or capacity
+conclusion.
 
 ### Scaling
 
 A transaction usually touches one or two users, such as the buyer and the seller. It
 changes only their queries, so it changes about 2 queries at any scale. The changed
-fraction is therefore about 1 / (2 × users). With the default 20 users, that is about
-2.5%. Subscription and item counts have little effect.
+fraction is therefore about 1 / (2 × users). With 20 users, that is about 2.5%; with
+the default 200 users, it is about 0.25%. Subscription and item counts have little
+effect.
 
 For larger runs, use users = queries / 5 and items = 5 × users, at five transactions
 per second. Two workloads measure different costs:
@@ -220,10 +220,10 @@ can still pin carrier threads in third-party blocking code.
 
 Result rows are checked against ordinary database queries twice, outside the timed
 window. Each subscription's primed result must equal the query at its registration
-tx-key. At the end of a stage, the driver waits until every subscription has reached
+tx-key. At the end of the run, the driver waits until every subscription has reached
 the last transaction's tx-key, stops the consumers and compares every client result
 with the query at the tx-key its subscription has reached. Deltas are not checked
-individually while the stage runs.
+individually while the run is in progress.
 
 The server applies one SlateDB WAL batch of transactions at a time. One delta can
 therefore cover several transactions and carries the tx-key of the last one; a batch
@@ -242,7 +242,7 @@ The timed write path does not issue verification queries. Procedure reads, HTTP
 encoding, and client scheduling still consume the same CPU budget. Low achieved write
 rate can therefore indicate a client bottleneck rather than server capacity.
 
-Text output gives the stage verdict, achieved transaction rate, catch-up p95 and
+Text output gives the verdict, achieved transaction rate, catch-up p95 and
 probe count, and combined RSS. JSON additionally includes initialization times,
 p50/p95/p99/max catch-up time, final result sizes, errors, and per-process CPU, peak
 RSS, OS threads, and file descriptors. RSS is sampled every 500 ms and
@@ -250,7 +250,7 @@ includes initialization and final verification, not just the measurement window.
 It is not the cgroup memory accounting used for enforcement. Unavailable process
 fields are null or have an error; remote/direct runs without server PIDs do not
 pretend to measure server resources. Reports include revisions, configured limits,
-and launcher metadata. A 30 second stage has about 60 probes; inspect the count
+and launcher metadata. A 30 second measurement has about 60 probes; inspect the count
 before reading the tail percentiles.
 
 ### WAL flush versus CDC polling
@@ -271,9 +271,8 @@ of the result.
 ### Validation
 
 The live-query integration tests cover insertions, updates, retractions, duplicate
-rows, initially empty views, irrelevant writes, reconnect/priming, the existing
-AuctionMark procedures, and fixture restoration. A two-stage driver test checks
-probes and restoration together.
+rows, initially empty views, irrelevant writes, reconnect/priming, and the existing
+AuctionMark procedures. A driver test runs a short benchmark and checks its probes.
 Use a pooled dev server and the locally published JVM artifact:
 
 ```bash
