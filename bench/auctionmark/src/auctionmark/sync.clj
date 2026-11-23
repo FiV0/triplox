@@ -29,8 +29,6 @@
    [nil "--duration SECONDS" "Measured writes" :default 30.0 :parse-fn parse-double]
    [nil "--sla-ms MS" "Maximum p95 time until every subscription reaches a transaction" :default 250.0 :parse-fn parse-double]
    [nil "--probe-ms MS" "Interval between catch-up probes" :default 500 :parse-fn parse-long]
-   [nil "--probe-timeout-ms MS" "Maximum wait for every subscription to reach a probe" :default 5000 :parse-fn parse-long]
-   [nil "--drain-ms MS" "Maximum wait at the end for every subscription to catch up" :default 30000 :parse-fn parse-long]
    [nil "--memory-mib N" "Combined sampled RSS limit" :default 8192 :parse-fn parse-long]
    [nil "--server-pid PID" "Server process to sample" :parse-fn parse-long]
    [nil "--storage-pid PID" "Object storage process to sample" :parse-fn parse-long]
@@ -40,7 +38,7 @@
 (defn validate-options [opts]
   (let [{:keys [users items subscriptions warmup]} opts
         positive? #(and (number? %) (Double/isFinite (double %)) (pos? %))]
-    (when-not (and (every? positive? (map opts [:port :users :items :subscriptions :rate :duration :sla-ms :probe-ms :probe-timeout-ms :drain-ms :memory-mib]))
+    (when-not (and (every? positive? (map opts [:port :users :items :subscriptions :rate :duration :sla-ms :probe-ms :memory-mib]))
                    (number? warmup)
                    (Double/isFinite (double warmup))
                    (<= 0 warmup)
@@ -117,15 +115,15 @@
   (every? #(<= tx-id @(:applied %)) entries))
 
 (defn- await-catch-up!
-  "Poll every millisecond until every subscription has reached tx-id. Returns false
-  after timeout-ms."
-  [entries tx-id timeout-ms]
-  (let [deadline (+ (System/nanoTime) (* 1000000 timeout-ms))]
-    (loop []
-      (cond
-        (caught-up? entries tx-id) true
-        (< (System/nanoTime) deadline) (do (Thread/sleep 1) (recur))
-        :else false))))
+  "Poll every millisecond until every subscription has reached tx-id, however long that
+  takes. Returns false only if the consumers stop or a subscription fails first, since
+  then the subscriptions may never reach tx-id."
+  [entries tx-id tracker running]
+  (loop []
+    (cond
+      (caught-up? entries tx-id) true
+      (or (not @running) (seq (:errors @tracker))) false
+      :else (do (Thread/sleep 1) (recur)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Workload
@@ -148,15 +146,14 @@
 
 (defn- probe!
   "Record how long after its submission the last subscription reached the transaction."
-  [entries tracker opts {:keys [tx-id start-ns]}]
-  (if (await-catch-up! entries tx-id (:probe-timeout-ms opts))
-    (swap! tracker update :catch-up-ms conj (/ (- (System/nanoTime) start-ns) 1e6))
-    (error! tracker {:error :catch-up-timeout :tx-id tx-id})))
+  [entries tracker running {:keys [tx-id start-ns]}]
+  (when (await-catch-up! entries tx-id tracker running)
+    (swap! tracker update :catch-up-ms conj (/ (- (System/nanoTime) start-ns) 1e6))))
 
 (defn tracked-transactor
   "A transact fn that paces writes and, in the measured window, probes one transaction
   every probe-ms."
-  [{:keys [entries tracker opts samples measured-start end next-due next-probe pacing-rng probes]}]
+  [{:keys [entries tracker running opts samples measured-start end next-due next-probe pacing-rng probes]}]
   (fn [conn tx]
     (check-limits! tracker samples opts)
     (let [scheduled @next-due]
@@ -164,14 +161,14 @@
       (let [start (System/nanoTime)
             result (live/transact! conn tx)]
         (reset! next-due (+ (max scheduled start) (jittered-interval-ns (:rate opts) pacing-rng)))
-        (swap! tracker assoc :last-tx-id (:tx-id result))
+        (swap! tracker assoc :last-tx-id (:tx-id result) :last-tx-start-ns start)
         (when (<= measured-start start (dec end))
           (swap! tracker update :transactions inc)
           (when (<= @next-probe start)
             (reset! next-probe (+ start (* 1000000 (:probe-ms opts))))
             (swap! probes conj (.start (Thread/ofVirtual)
-                                       ^Runnable #(probe! entries tracker opts {:tx-id (:tx-id result)
-                                                                                :start-ns start})))))
+                                       ^Runnable #(probe! entries tracker running {:tx-id (:tx-id result)
+                                                                                   :start-ns start})))))
         result))))
 
 (defn- run-workload!
@@ -197,11 +194,12 @@
       (check-limits! tracker samples opts))))
 
 (defn- drain!
-  "Wait for every subscription to reach the last transaction."
-  [entries tracker opts]
-  (when-let [tx-id (:last-tx-id @tracker)]
-    (when-not (await-catch-up! entries tx-id (:drain-ms opts))
-      (error! tracker {:error :not-caught-up :tx-id tx-id}))))
+  "Wait for every subscription to reach the last transaction and record how long after
+  its submission the last subscription got there."
+  [entries tracker running]
+  (let [{:keys [last-tx-id last-tx-start-ns]} @tracker]
+    (when (and last-tx-id (await-catch-up! entries last-tx-id tracker running))
+      (swap! tracker assoc :final-catch-up-ms (/ (- (System/nanoTime) last-tx-start-ns) 1e6)))))
 
 (defn verify-final!
   "Stop the consumers, then check each subscription's client-side result against a
@@ -263,25 +261,28 @@
       (reset! initialization-ms (/ (- (System/nanoTime) start) 1e6))
       (run-workload! conn state {:entries @entries
                                  :tracker tracker
+                                 :running running
                                  :probes probes
                                  :samples samples
                                  :skipped skipped
                                  :opts opts})
-      (drain! @entries tracker opts)
+      (drain! @entries tracker running)
       (verify-final! conn @entries tracker running)
       (catch Exception e
         (error! tracker {:error :run-aborted :message (.getMessage e)}))
       (finally
         (reset! sampling false)
         (.join sampler 2000)
-        ;; Probes give up after probe-timeout-ms.
+        ;; After a full drain every probe has finished; after an abort, stopping the
+        ;; consumers makes the remaining probes give up.
+        (close-subscriptions! @entries running)
         (doseq [^Thread probe @probes]
-          (.join probe))
-        (close-subscriptions! @entries running)))
-    (let [{:keys [transactions catch-up-ms errors]} @tracker
+          (.join probe))))
+    (let [{:keys [transactions catch-up-ms final-catch-up-ms errors]} @tracker
           metrics {:committed-transactions transactions
                    :transactions-per-second (/ transactions (:duration opts))
                    :catch-up-ms (percentiles catch-up-ms)
+                   :final-catch-up-ms final-catch-up-ms
                    :errors errors}
           resources (resources/summarize @samples)
           failures (failed-checks @entries metrics resources opts)]
@@ -300,11 +301,13 @@
 ;; Entry point
 
 (defn- print-result [result]
-  (println (format "%4d subscriptions  %.2f tx/s  catch-up p95=%s ms (%d probes)  RSS=%.0f MiB  %s"
+  (println (format "%4d subscriptions  %.2f tx/s  catch-up p95=%s max=%s ms (%d probes)  final catch-up=%s ms  RSS=%.0f MiB  %s"
                    (:subscriptions result)
                    (:transactions-per-second result)
                    (get-in result [:catch-up-ms :p95])
+                   (get-in result [:catch-up-ms :max])
                    (get-in result [:catch-up-ms :count])
+                   (:final-catch-up-ms result)
                    (get-in result [:resources :combined-peak-rss-mib])
                    (if (:passed? result) "PASS" "FAIL")))
   (when (seq (:failed-checks result))

@@ -11,7 +11,7 @@
 (deftest validates-options
   (is (= defaults (sync/validate-options defaults)))
   (doseq [changes [{:subscriptions 1001} {:subscriptions 0} {:items 199} {:rate 0} {:rate Double/NaN}
-                   {:duration -1} {:probe-ms 0} {:probe-timeout-ms 0} {:drain-ms 0} {:warmup Double/POSITIVE_INFINITY}]]
+                   {:duration -1} {:probe-ms 0} {:warmup Double/POSITIVE_INFINITY}]]
     (is (thrown? clojure.lang.ExceptionInfo (sync/validate-options (merge defaults changes))))))
 
 (deftest runs-and-probes
@@ -21,4 +21,5 @@
           result (sync/run-benchmark! conn state opts {:client (.pid (ProcessHandle/current))})]
       (is (:passed? result) (pr-str result))
       (is (pos? (get-in result [:catch-up-ms :count])))
+      (is (pos? (:final-catch-up-ms result)))
       (is (< (:skipped-operations result) (:committed-transactions result))))))

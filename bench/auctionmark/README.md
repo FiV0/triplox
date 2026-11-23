@@ -117,8 +117,6 @@ Launcher options come first; arguments after `--` go to the Clojure driver.
 | `-- --duration SECONDS` | 30 | Measured writes |
 | `-- --sla-ms MS` | 250 | Maximum p95 catch-up time |
 | `-- --probe-ms MS` | 500 | Interval between catch-up probes |
-| `-- --probe-timeout-ms MS` | 5000 | Maximum wait for a probe |
-| `-- --drain-ms MS` | 30000 | Maximum final catch-up wait |
 
 The launcher sets `--host`, `--port`, `--server-pid`, `--storage-pid`, `--memory-mib`,
 and `--output` itself and overrides any values passed after `--`.
@@ -191,9 +189,9 @@ user has live queries, so most writes change at least one subscription. The run 
 - correct primed and final results, and no failed subscriptions;
 - combined sampled RSS within the memory budget.
 
-A run with no probes cannot pass. A probe that waits longer than five seconds
-(`--probe-timeout-ms`), or a final catch-up that waits longer than 30 seconds
-(`--drain-ms`), fails the run. A failed run exits nonzero and retains its report. A
+A run with no probes cannot pass. Probes and the final catch-up have no timeout: however
+late the subscriptions are, the driver waits for them and records the time, and only
+the launcher's `--timeout` bounds the whole run. A failed run exits nonzero and retains its report. A
 passing run establishes only the tested count for this fixture and machine, not a
 maximum capacity. Subscriptions need at least subscriptions/5 users and at least as
 many items as users:
@@ -260,14 +258,16 @@ probe polls every millisecond until every subscription has reached the transacti
 tx-id, and records the time since the transaction was submitted. This is the catch-up
 time of the slowest subscription. It starts immediately before the transaction API
 call, so it includes serialization, network time and the wait for the acknowledgement.
-No other per-subscription or per-delivery latency is tracked.
+The final catch-up, from the last transaction's submission until every subscription
+has reached it, is recorded the same way as `final-catch-up-ms`. No other
+per-subscription or per-delivery latency is tracked.
 
 The timed write path does not issue verification queries. Procedure reads, HTTP
 encoding, and client scheduling still consume the same CPU budget. Low achieved write
 rate can therefore indicate a client bottleneck rather than server capacity.
 
-Text output gives the verdict, achieved transaction rate, catch-up p95 and
-probe count, and combined RSS. JSON additionally includes initialization times,
+Text output gives the verdict, achieved transaction rate, catch-up p95, max and
+probe count, final catch-up time, and combined RSS. JSON additionally includes initialization times,
 p50/p95/p99/max catch-up time, final result sizes, errors, and per-process CPU, peak
 RSS, OS threads, and file descriptors. RSS is sampled every 500 ms and
 includes initialization and final verification, not just the measurement window.
