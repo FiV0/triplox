@@ -109,7 +109,7 @@ server starts. The launcher requires the client scope to succeed. The direct Clo
 command only samples RSS; it does not install these operating-system limits.
 
 DBSP's process RSS pressure threshold is 75% of the smaller of host RAM and the
-tightest detected cgroup memory limit, including parent cgroups. With no limit on the
+cgroup memory limit reported by sysinfo. With no limit on the
 server, it is 75% of host RAM. This is a soft pressure threshold for the whole Triplox
 process; nothing enforces a hard limit. The server log records the detected threshold
 as `DBSP process RSS budget` in bytes.

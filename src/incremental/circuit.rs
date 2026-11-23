@@ -24,7 +24,7 @@ use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, 
 use crate::incremental::{EncodedRow, EncodedTriple};
 use crate::ops::DataType;
 use crate::query::{FindPlan, Projection};
-use crate::util::{cgroup_memory_limit, rss_budget};
+use crate::util::rss_budget;
 
 // Standard row -> weight
 pub(crate) type RowZSet = OrdZSet<EncodedRow>;
@@ -474,7 +474,7 @@ pub(super) static MAX_RSS_BYTES: LazyLock<Option<u64>> = LazyLock::new(|| {
     } else {
         None
     };
-    let budget = rss_budget(total_memory, cgroup_memory_limit(cgroup_memory));
+    let budget = rss_budget(total_memory, cgroup_memory);
     if let Some(bytes) = budget {
         tracing::info!(bytes, "DBSP process RSS budget");
     } else {
