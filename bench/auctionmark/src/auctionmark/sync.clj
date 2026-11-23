@@ -1,5 +1,5 @@
 (ns auctionmark.sync
-  "Bounded live-query experiment with a transaction-based delivery oracle."
+  "Bounded live-query experiment checking every delta against a reference model."
   (:refer-clojure :exclude [run!])
   (:require [auctionmark.live :as live]
             [auctionmark.measure :as measure]
@@ -69,8 +69,8 @@
         (cond
           (= ::tc/timeout delta) nil
           (nil? delta) (throw (ex-info "Subscription ended" {:query-id id}))
-          ;; The server sends an empty delta for each batch that leaves the result unchanged.
-          (empty? delta) nil
+          ;; Empty deltas count too: they move the subscription's tx-key past
+          ;; batches that leave the result unchanged or whose changes cancel out.
           :else (let [updated (swap! rows live/apply-delta delta)
                       applied (System/nanoTime)]
                   (swap! tracker measure/record-delivery (:tx-id (tc/tx-key sub)) id updated applied)))))
@@ -79,26 +79,28 @@
         (error! tracker {:error :consumer-failed :query-id id :message (.getMessage e)})))))
 
 (defn- prime!
-  "Apply the subscription's initial result and check it against the model."
-  [{:keys [id sub rows] :as entry} model]
-  (let [expected (live/result-rows model entry)
-        delta (tc/take! sub 10000)]
+  "Apply the subscription's initial result, check it against a standard query at the
+  registration tx-key and start the subscription's expected history from it."
+  [conn {:keys [id sub rows query]} tracker]
+  (let [delta (tc/take! sub 10000)]
     (when (or (nil? delta) (= ::tc/timeout delta))
       (throw (ex-info "Priming timed out" {:query-id id})))
-    (swap! rows live/apply-delta delta)
-    (when-not (= expected @rows)
-      (throw (ex-info "Incorrect priming result" {:query-id id})))))
+    (let [primed (swap! rows live/apply-delta delta)
+          tx-key (tc/registration-tx-key sub)]
+      (when-not (= (frequencies (tc/q (tc/db conn tx-key) query)) primed)
+        (throw (ex-info "Incorrect priming result" {:query-id id :tx-key tx-key})))
+      (swap! tracker measure/register-subscription id (:tx-id tx-key) primed))))
 
 (defn open-subscriptions!
   "Subscribe and prime one query at a time, then start its consumer."
-  [conn descriptors model entries tracker running]
+  [conn descriptors entries tracker running]
   (doseq [d descriptors]
     (let [start (System/nanoTime)
           entry (assoc d :sub (tc/subscribe conn (:query d)) :rows (atom {}))
           index (count @entries)]
       ;; Register before priming so a failure still closes this subscription.
       (swap! entries conj entry)
-      (prime! entry model)
+      (prime! conn entry tracker)
       (swap! entries assoc index
              (assoc entry
                     :initialization-ms (/ (- (System/nanoTime) start) 1e6)
@@ -125,7 +127,7 @@
       (throw (ex-info "Subscription error" {})))
     (when (> (resources/combined-rss (last @samples)) (:memory-mib opts))
       (throw (ex-info "Combined process RSS exceeded memory limit" {})))
-    (when (some #(< (:start-ns %) oldest-allowed) (vals (:pending @tracker)))
+    (when (some #(< (:start-ns %) oldest-allowed) (measure/pending-deliveries @tracker))
       (throw (ex-info "Expected delivery exceeded backlog age limit" {})))))
 
 (defn- expected-changes
@@ -178,17 +180,17 @@
                                                                 :next-due (atom begin)
                                                                 :pacing-rng (Random. (inc (:seed opts))))))]
     (while (< (System/nanoTime) end)
-      (let [before (count (:known @tracker))]
+      (let [before (:last-tx-id @tracker)]
         (live/mutate! conn rng state @(:model ctx))
         ;; Procedures with nothing to do (e.g. no waiting items) don't write.
-        (when (= before (count (:known @tracker)))
+        (when (= before (:last-tx-id @tracker))
           (swap! skipped inc)
           (Thread/sleep 10)))
       (check-limits! tracker samples opts))))
 
 (defn drain! [tracker timeout-ms]
   (let [deadline (+ (System/nanoTime) (* 1000000 timeout-ms))]
-    (while (and (seq (:pending @tracker))
+    (while (and (seq (measure/pending-deliveries @tracker))
                 (< (System/nanoTime) deadline)
                 (empty? (:errors @tracker)))
       (Thread/sleep 10))))
@@ -243,7 +245,7 @@
         start (System/nanoTime)
         initialization-ms (atom nil)]
     (try
-      (open-subscriptions! conn descriptors @model entries tracker running)
+      (open-subscriptions! conn descriptors entries tracker running)
       (reset! initialization-ms (/ (- (System/nanoTime) start) 1e6))
       (run-workload! conn state {:model model
                                  :descriptors descriptors

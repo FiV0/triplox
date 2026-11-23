@@ -19,11 +19,19 @@
 (defn- apply-next-delta! [{:keys [sub rows]}]
   (swap! rows live/apply-delta (tc/take! sub 5000)))
 
-(defn- assert-empty-delta
-  "An unchanged result still gets an empty delta for the transaction."
-  [{:keys [sub]} tx-id]
-  (is (= [] (tc/take! sub 5000)))
-  (is (= tx-id (:tx-id (tc/tx-key sub)))))
+(defn- assert-primed
+  "The first delta, also for an empty result, matches a standard query at the registration tx-key."
+  [conn {:keys [sub rows query] :as s}]
+  (apply-next-delta! s)
+  (is (= (frequencies (tc/q (tc/db conn (tc/registration-tx-key sub)) query)) @rows)))
+
+(defn- catch-up!
+  "Apply deltas until the subscription reaches tx-id. One delta covers a whole WAL
+  batch, so it can span several transactions, and it is empty when the batch leaves
+  the result unchanged."
+  [{:keys [sub] :as s} tx-id]
+  (while (< (:tx-id (tc/tx-key sub)) tx-id)
+    (apply-next-delta! s)))
 
 (def auction-changes
   [[{:db/id [:item/id 0] :item/current-price 200.0 :item/num-bids 2}]
@@ -47,31 +55,22 @@
           model (atom baseline)
           subs (mapv #(assoc % :sub (tc/subscribe conn (:query %)) :rows (atom {})) descriptors)]
       (try
-        ;; The priming delta arrives also for an empty result.
         (doseq [s subs]
-          (apply-next-delta! s)
-          (is (= (live/result-rows @model s) @(:rows s))))
+          (assert-primed conn s))
         (doseq [tx auction-changes]
-          (let [before @model
-                after (live/apply-tx before tx)
+          (let [after (swap! model live/apply-tx tx)
                 result (live/transact! conn tx)]
             (doseq [s subs]
-              (let [expected (live/result-rows after s)]
-                (if (= expected (live/result-rows before s))
-                  (assert-empty-delta s (:tx-id result))
-                  (do
-                    (apply-next-delta! s)
-                    (is (= (:tx-id result) (:tx-id (tc/tx-key (:sub s)))))))
-                (is (= expected @(:rows s)))))
-            (reset! model after)
+              (catch-up! s (:tx-id result))
+              (is (= (:tx-id result) (:tx-id (tc/tx-key (:sub s)))))
+              (is (= (live/result-rows after s) @(:rows s))))
             (assert-oracle conn after descriptors)))
         (finally
           (doseq [{:keys [sub]} subs]
             (.close sub))))
       ;; A late subscriber starts from the current result.
       (with-open [sub (tc/subscribe conn (:query (first descriptors)))]
-        (is (= (live/result-rows @model (first descriptors))
-               (live/apply-delta {} (tc/take! sub 5000)))))
+        (assert-primed conn {:sub sub :rows (atom {}) :query (:query (first descriptors))}))
       (live/restore! conn @model baseline)
       (assert-oracle conn baseline descriptors))))
 

@@ -25,4 +25,5 @@
           (is (zero? (:missing-deliveries result)))
           (is (zero? (:unmatched-deliveries result)))
           (is (pos? (get-in result [:latency-ms :count])))
+          (is (< (:skipped-operations result) (:committed-transactions result)))
           (fixture/assert-oracle conn (:model baseline) (live/queries 2 4 10)))))))
