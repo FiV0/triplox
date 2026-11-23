@@ -21,7 +21,6 @@ use super::worker::Batch;
 use crate::codec::{Decode, Encode};
 use crate::expr::{evaluate, evaluate_as_bool, expr_variables, EvalContext, Expr};
 use crate::inc_query::{IncrementalQueryPlan, PatternPlan, PatternSlot, RelPlan, RelPlanKind};
-use crate::incremental::row::{append_value, row_from_values, row_value, select_values, RowValues};
 use crate::incremental::{EncodedRow, EncodedTriple};
 use crate::ops::DataType;
 use crate::query::{FindPlan, Projection};
@@ -54,18 +53,23 @@ fn pattern_row(pattern: &PatternPlan, triple: &EncodedTriple) -> Option<EncodedR
         return None;
     }
 
-    Some(row_from_values(pattern.pattern_vars.iter().filter_map(
-        |var| {
-            if matches!(&pattern.entity, PatternSlot::Variable(entity_var) if entity_var == var) {
-                Some(triple.entity.as_slice())
-            } else if matches!(&pattern.value, PatternSlot::Variable(value_var) if value_var == var)
-            {
-                Some(triple.value.as_slice())
-            } else {
-                None
-            }
-        },
-    )))
+    Some(
+        pattern
+            .pattern_vars
+            .iter()
+            .filter_map(|var| {
+                if matches!(&pattern.entity, PatternSlot::Variable(entity_var) if entity_var == var)
+                {
+                    Some(triple.entity.clone())
+                } else if matches!(&pattern.value, PatternSlot::Variable(value_var) if value_var == var)
+                {
+                    Some(triple.value.clone())
+                } else {
+                    None
+                }
+            })
+            .collect(),
+    )
 }
 
 // Finds the positions of selected variables in a row variable order.
@@ -82,7 +86,10 @@ fn positions(vars: &[Variable], selected: &[Variable]) -> Vec<usize> {
 
 // Selects row values at the requested positions.
 fn select_row_positions(row: &EncodedRow, positions: &[usize]) -> EncodedRow {
-    select_values(row, positions)
+    positions
+        .iter()
+        .map(|position| row[*position].clone())
+        .collect()
 }
 
 #[derive(Clone)]
@@ -93,11 +100,13 @@ enum RowSource {
 
 // Merges joined left and right rows into the planned output row order.
 fn merge_rows(left: &EncodedRow, right: &EncodedRow, sources: &[RowSource]) -> EncodedRow {
-    let (left, right) = (RowValues::new(left), RowValues::new(right));
-    row_from_values(sources.iter().map(|source| match source {
-        RowSource::Left(position) => left.get(*position),
-        RowSource::Right(position) => right.get(*position),
-    }))
+    sources
+        .iter()
+        .map(|source| match source {
+            RowSource::Left(position) => left[*position].clone(),
+            RowSource::Right(position) => right[*position].clone(),
+        })
+        .collect()
 }
 
 // Joins incoming and pattern streams using their planned row layouts.
@@ -207,10 +216,9 @@ fn update_expression_bindings(
     variable_positions: &[(Variable, usize)],
     bindings: &mut HashMap<Variable, DataType>,
 ) {
-    let values = RowValues::new(row);
     for (variable, position) in variable_positions {
-        let value = DataType::decode(values.get(*position))
-            .expect("incremental expression value should decode");
+        let value =
+            DataType::decode(&row[*position]).expect("incremental expression value should decode");
         if let Some(binding) = bindings.get_mut(variable) {
             *binding = value;
         } else {
@@ -260,7 +268,7 @@ fn apply_function_stream(
             stream.filter(move |row| {
                 let mut bindings = bindings.borrow_mut();
                 evaluate_row_expression(row, &variable_positions, &mut bindings, &expr).is_some_and(
-                    |result| result.encode().as_slice() == row_value(row, output_position),
+                    |result| result.encode().as_slice() == row[output_position].as_slice(),
                 )
             })
         }
@@ -269,7 +277,9 @@ fn apply_function_stream(
             stream.flat_map(move |row| {
                 let result =
                     evaluate_row_expression(row, &variable_positions, &mut bindings, &expr)?;
-                Some(append_value(row, &result.encode()))
+                let mut output = row.clone();
+                output.push(result.encode());
+                Some(output)
             })
         }
     }
@@ -417,10 +427,9 @@ fn project_find_stream(
 
     // TODO: After find every position is an AggregateOutput. This should likely be named differently.
     where_stream.stream.map(move |row| {
-        let values = RowValues::new(row);
-        find_positions
-            .iter()
-            .map(|position| AggregateOutput::Value(values.get(*position).to_vec()))
+        select_row_positions(row, &find_positions)
+            .into_iter()
+            .map(AggregateOutput::Value)
             .collect()
     })
 }
@@ -596,7 +605,6 @@ mod tests {
         TYPE_ATTR_ID as TYPE,
     };
     use crate::inc_query::{IncrementalQueryPlan, PatternSlot};
-    use crate::incremental::row::row_to_vecs;
     use crate::incremental::worker::test_support::single_batch;
     use crate::ops::{DataType, Entid};
 
@@ -652,11 +660,11 @@ mod tests {
         futures::executor::block_on(circuit.prime(triples))
     }
 
-    fn collect_rows(output: &OutputHandle<RowZSet>) -> Vec<(Vec<Vec<u8>>, ZWeight)> {
+    fn collect_rows(output: &OutputHandle<RowZSet>) -> Vec<(EncodedRow, ZWeight)> {
         let mut rows = output
             .consolidate()
             .iter()
-            .map(|(row, (), weight)| (row_to_vecs(&row), weight))
+            .map(|(row, (), weight)| (row, weight))
             .collect::<Vec<_>>();
         rows.sort();
         rows

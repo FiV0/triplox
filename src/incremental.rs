@@ -25,7 +25,6 @@ use edn::query::ParsedQuery;
 
 pub(crate) mod cdc;
 pub(crate) mod circuit;
-pub(crate) mod row;
 pub(crate) mod subscription;
 
 use subscription::{SubscriptionDeltas, SubscriptionLagged, Termination};
@@ -58,8 +57,7 @@ impl Default for IncrementalQueryOptions {
 }
 
 pub(crate) type EncodedValue = Vec<u8>;
-// A shared buffer of encoded values; see `row`.
-pub(crate) type EncodedRow = feldera_sqllib::FlatVariant;
+pub(crate) type EncodedRow = Vec<EncodedValue>;
 
 #[derive(
     Clone,
