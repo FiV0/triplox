@@ -15,7 +15,7 @@
 
 (deftest runs-and-probes
   (with-open [conn (fixture/connect)]
-    (let [opts (merge defaults {:users 2 :items 4 :subscriptions 10 :warmup 0 :duration 2 :sla-ms 5000})
+    (let [opts (merge defaults {:users 2 :items 4 :subscriptions 10 :warmup 0 :duration 2})
           state (live/load-fixture! conn opts)
           result (sync/run-benchmark! conn state opts)]
       (is (:passed? result) (pr-str result))

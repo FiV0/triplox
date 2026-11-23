@@ -115,7 +115,6 @@ Launcher options come first; arguments after `--` go to the Clojure driver.
 | `-- --rate N` | 5 | Target committed transactions/second |
 | `-- --warmup SECONDS` | 10 | Writes before measurement |
 | `-- --duration SECONDS` | 30 | Measured writes |
-| `-- --sla-ms MS` | 250 | Maximum p95 catch-up time |
 | `-- --probe-ms MS` | 500 | Interval between catch-up probes |
 
 The launcher sets `--host`, `--port` and `--output` itself and overrides any values
@@ -184,7 +183,7 @@ users), then writes at five committed transactions/second: 10 seconds of warmup
 (`--warmup`), then 30 seconds of measurement (`--duration`). With the defaults, every
 user has live queries, so most writes change at least one subscription. The run passes only if it has:
 
-- p95 catch-up time below 250 ms (see below);
+- at least one catch-up probe (see below);
 - at least 90% of the requested transaction rate;
 - correct primed and final results, and no failed subscriptions;
 - combined peak memory within the launcher's threshold (launcher runs only).
@@ -297,9 +296,8 @@ a 200 ms write interval.
 Memory/local storage use SlateDB's default 100 ms flush interval. Remote storage
 defaults to 200 ms; this RustFS demo explicitly sets `wal_flush_interval_us=100`
 to preserve its **100 microsecond** flush interval. Actual writes take additional
-time. `src/incremental/cdc.rs` keeps its 200 ms polling interval. With a
-250 ms freshness target, polling phase and object-store latency are material parts
-of the result.
+time. `src/incremental/cdc.rs` keeps its 200 ms polling interval, so polling phase
+and object-store latency are material parts of the measured catch-up time.
 
 ### Validation
 

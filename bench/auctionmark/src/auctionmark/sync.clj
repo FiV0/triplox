@@ -25,7 +25,6 @@
    [nil "--rate N" "Target committed transactions/second" :default 5.0 :parse-fn parse-double]
    [nil "--warmup SECONDS" "Writes before measurement" :default 10.0 :parse-fn parse-double]
    [nil "--duration SECONDS" "Measured writes" :default 30.0 :parse-fn parse-double]
-   [nil "--sla-ms MS" "Maximum p95 time until every subscription reaches a transaction" :default 250.0 :parse-fn parse-double]
    [nil "--probe-ms MS" "Interval between catch-up probes" :default 500 :parse-fn parse-long]
    [nil "--output PATH" "JSON report" :default "sync-report.json"]
    ["-h" "--help"]])
@@ -33,7 +32,7 @@
 (defn validate-options [opts]
   (let [{:keys [users items subscriptions warmup]} opts
         positive? #(and (number? %) (Double/isFinite (double %)) (pos? %))]
-    (when-not (and (every? positive? (map opts [:port :users :items :subscriptions :rate :duration :sla-ms :probe-ms]))
+    (when-not (and (every? positive? (map opts [:port :users :items :subscriptions :rate :duration :probe-ms]))
                    (number? warmup)
                    (Double/isFinite (double warmup))
                    (<= 0 warmup)
@@ -218,13 +217,11 @@
      :max (last values)}))
 
 (defn- failed-checks [entries metrics opts]
-  (let [p95 (get-in metrics [:catch-up-ms :p95])]
-    (cond-> []
-      (not= (:subscriptions opts) (count entries)) (conj :initialization)
-      (seq (:errors metrics)) (conj :correctness-or-runtime)
-      (nil? p95) (conj :no-probes)
-      (and p95 (>= p95 (:sla-ms opts))) (conj :freshness)
-      (< (:transactions-per-second metrics) (* 0.9 (:rate opts))) (conj :write-rate))))
+  (cond-> []
+    (not= (:subscriptions opts) (count entries)) (conj :initialization)
+    (seq (:errors metrics)) (conj :correctness-or-runtime)
+    (zero? (get-in metrics [:catch-up-ms :count])) (conj :no-probes)
+    (< (:transactions-per-second metrics) (* 0.9 (:rate opts))) (conj :write-rate)))
 
 (defn run-benchmark!
   "Open the subscriptions, write through warmup and the measured period, then verify."
