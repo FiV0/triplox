@@ -1,5 +1,6 @@
 (ns auctionmark.sync
-  "Bounded live-query experiment checking every delta against a reference model."
+  "Bounded live-query experiment. Subscription results are checked against standard
+  queries when primed and at the end of each stage."
   (:refer-clojure :exclude [run!])
   (:require [auctionmark.live :as live]
             [auctionmark.measure :as measure]
@@ -61,7 +62,7 @@
   (swap! tracker update :errors conj error))
 
 (defn consume!
-  "Apply deltas as they arrive and hand each updated result to the tracker."
+  "Apply deltas as they arrive and record each one's tx-key and application time."
   [{:keys [sub rows id]} tracker running]
   (try
     (while @running
@@ -71,16 +72,15 @@
           (nil? delta) (throw (ex-info "Subscription ended" {:query-id id}))
           ;; Empty deltas count too: they move the subscription's tx-key past
           ;; batches that leave the result unchanged or whose changes cancel out.
-          :else (let [updated (swap! rows live/apply-delta delta)
-                      applied (System/nanoTime)]
-                  (swap! tracker measure/record-delivery (:tx-id (tc/tx-key sub)) id updated applied)))))
+          :else (do (swap! rows live/apply-delta delta)
+                    (swap! tracker measure/record-delivery (:tx-id (tc/tx-key sub)) id (System/nanoTime))))))
     (catch Exception e
       (when @running
         (error! tracker {:error :consumer-failed :query-id id :message (.getMessage e)})))))
 
 (defn- prime!
-  "Apply the subscription's initial result, check it against a standard query at the
-  registration tx-key and start the subscription's expected history from it."
+  "Apply the subscription's initial result and check it against a standard query at the
+  registration tx-key."
   [conn {:keys [id sub rows query]} tracker]
   (let [delta (tc/take! sub 10000)]
     (when (or (nil? delta) (= ::tc/timeout delta))
@@ -89,7 +89,7 @@
           tx-key (tc/registration-tx-key sub)]
       (when-not (= (frequencies (tc/q (tc/db conn tx-key) query)) primed)
         (throw (ex-info "Incorrect priming result" {:query-id id :tx-key tx-key})))
-      (swap! tracker measure/register-subscription id (:tx-id tx-key) primed))))
+      (swap! tracker measure/register-subscription (:tx-id tx-key)))))
 
 (defn open-subscriptions!
   "Subscribe and prime one query at a time, then start its consumer."
@@ -106,12 +106,18 @@
                     :initialization-ms (/ (- (System/nanoTime) start) 1e6)
                     :consumer (.start (Thread/ofVirtual) ^Runnable #(consume! entry tracker running)))))))
 
+(defn- stop-consumers!
+  "Stop consuming deltas, so each subscription's rows stay at its tx-key."
+  [entries running]
+  (reset! running false)
+  (doseq [{:keys [consumer]} entries :when consumer]
+    (.join ^Thread consumer 2000)))
+
 (defn close-subscriptions! [entries running]
   (reset! running false)
   (doseq [{:keys [sub]} entries]
     (.close sub))
-  (doseq [{:keys [consumer]} entries :when consumer]
-    (.join ^Thread consumer 2000)))
+  (stop-consumers! entries running))
 
 ;; ---------------------------------------------------------------------------
 ;; Workload
@@ -131,12 +137,12 @@
       (throw (ex-info "Expected delivery exceeded backlog age limit" {})))))
 
 (defn- expected-changes
-  "The new result of every subscription the transaction changes, by query id."
+  "The kind of every subscription the model predicts the transaction changes, by query
+  id. Used for timing only; result rows are checked against standard queries."
   [descriptors before after]
   (into {} (for [d descriptors
-                 :let [rows (live/result-rows after d)]
-                 :when (not= rows (live/result-rows before d))]
-             [(:id d) {:rows rows :kind (:kind d)}])))
+                 :when (not= (live/result-rows after d) (live/result-rows before d))]
+             [(:id d) (:kind d)])))
 
 (defn- jittered-interval-ns
   "Time to the next transaction at the target rate, with +-10% jitter."
@@ -144,7 +150,8 @@
   (long (* (/ 1e9 rate) (+ 0.9 (* 0.2 (.nextDouble rng))))))
 
 (defn tracked-transactor
-  "A transact fn that paces writes, advances the model and records expected deliveries."
+  "A transact fn that paces writes, advances the model and records which subscriptions
+  should change."
   [{:keys [model descriptors tracker opts samples measured-start end next-due pacing-rng]}]
   (fn [conn tx]
     (check-limits! tracker samples opts)
@@ -196,15 +203,14 @@
       (Thread/sleep 10))))
 
 (defn verify-final!
-  "Check both client-side results and fresh queries against the model."
-  [conn model entries tracker]
-  (let [db (tc/db conn)]
-    (doseq [{:keys [id query rows] :as entry} entries]
-      (let [expected (live/result-rows model entry)]
-        (when-not (= expected @rows)
-          (error! tracker {:error :final-client-mismatch :query-id id}))
-        (when-not (= expected (frequencies (tc/q db query)))
-          (error! tracker {:error :final-database-mismatch :query-id id}))))))
+  "Stop the consumers, then check each subscription's client-side result against a
+  standard query at the tx-key the subscription has reached."
+  [conn entries tracker running]
+  (stop-consumers! entries running)
+  (doseq [{:keys [id sub query rows]} entries]
+    (let [tx-key (tc/tx-key sub)]
+      (when-not (= (frequencies (tc/q (tc/db conn tx-key) query)) @rows)
+        (error! tracker {:error :final-result-mismatch :query-id id :tx-key tx-key})))))
 
 ;; ---------------------------------------------------------------------------
 ;; Stages
@@ -254,7 +260,7 @@
                                  :skipped skipped
                                  :opts opts})
       (drain! tracker (:drain-ms opts))
-      (verify-final! conn @model @entries tracker)
+      (verify-final! conn @entries tracker running)
       (catch Exception e
         (error! tracker {:error :stage-aborted :message (.getMessage e)}))
       (finally

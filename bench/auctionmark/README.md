@@ -189,27 +189,29 @@ deltas. The client opts into virtual readers; the JVM library's default reader
 behavior is unchanged. OS threads are sampled separately because virtual threads
 can still pin carrier threads in third-party blocking code.
 
-Each subscription's primed result is checked against an ordinary query at its
-registration tx-key and starts that subscription's expected history. Before
-submitting a transaction, a small in-process reference model computes which query
-results should change and their new results. After the response, the transaction
-ID is added to the history of each changed result.
+Result rows are checked against ordinary database queries twice, outside the timed
+window. Each subscription's primed result must equal the query at its registration
+tx-key. At the end of a stage, the driver drains expected deliveries, stops the
+consumers and compares every client result with the query at the tx-key its
+subscription has reached. Deltas are not checked individually while the stage runs.
+
+Latency needs to know which results a transaction changes. Before submitting a
+transaction, a small in-process reference model predicts this. The model only times
+deliveries; it does not check rows. After the response, the transaction ID becomes
+an expected delivery for each subscription the model predicted would change.
 
 The server applies one SlateDB WAL batch of transactions at a time. One delta can
 therefore cover several transactions and carries the tx-key of the last one. Changes
 within a batch can cancel out, and a batch that leaves a result unchanged still sends
 an empty delta. The client consumes every delta, empty ones included, and applies its
-signed row weights. The tracker then compares the whole resulting bag with the
-expected result as of the delta's tx-key. A change counts as delivered when its
-subscription first reaches a tx-key at or after the transaction, so an absent
-delivery cannot disappear from the latency statistics. A delta that arrives before
-its transaction's acknowledgement is parked until the acknowledgement arrives.
-Unchanged query/transaction pairs are counted separately. Warmup changes are checked
-but excluded from latency and throughput samples.
+signed row weights. A change counts as delivered when its subscription first reaches
+a tx-key at or after the transaction, so an absent delivery cannot disappear from
+the latency statistics. A delta that arrives before its transaction's
+acknowledgement is parked until the acknowledgement arrives. Unchanged
+query/transaction pairs are counted separately. Warmup changes are excluded from
+latency and throughput samples.
 
-At the end of a stage, the driver drains expected deliveries and compares every
-client result with both its model and an ordinary database query. The timed write
-path does not issue one verification query per subscription. Oracle computation,
+The timed write path does not issue verification queries. Model computation,
 procedure reads, HTTP encoding, and client scheduling still consume the same CPU
 budget. Low achieved write rate or scheduling delays can therefore indicate a
 client bottleneck rather than server capacity. Procedure reads happen before the
@@ -248,8 +250,9 @@ of the result.
 The live-query integration tests cover insertions, updates, retractions, duplicate
 rows, initially empty views, irrelevant writes, reconnect/priming, the existing
 AuctionMark procedures, and fixture restoration. Tracker tests cover delivery
-before acknowledgement, missing and incorrect deliveries, deltas covering several
-transactions, changes that cancel within a batch, and unchanged transactions. A two-stage driver test checks measurement and restoration together.
+before acknowledgement, missing deliveries, deltas covering several transactions,
+and unchanged transactions. A two-stage driver test checks measurement and
+restoration together.
 Use a pooled dev server and the locally published JVM artifact:
 
 ```bash

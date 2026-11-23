@@ -25,6 +25,11 @@
   (apply-next-delta! s)
   (is (= (frequencies (tc/q (tc/db conn (tc/registration-tx-key sub)) query)) @rows)))
 
+(defn- assert-current
+  "The subscription's rows match a standard query at the tx-key it has reached."
+  [conn {:keys [sub rows query]}]
+  (is (= (frequencies (tc/q (tc/db conn (tc/tx-key sub)) query)) @rows)))
+
 (defn- catch-up!
   "Apply deltas until the subscription reaches tx-id. One delta covers a whole WAL
   batch, so it can span several transactions, and it is empty when the batch leaves
@@ -63,7 +68,7 @@
             (doseq [s subs]
               (catch-up! s (:tx-id result))
               (is (= (:tx-id result) (:tx-id (tc/tx-key (:sub s)))))
-              (is (= (live/result-rows after s) @(:rows s))))
+              (assert-current conn s))
             (assert-oracle conn after descriptors)))
         (finally
           (doseq [{:keys [sub]} subs]
