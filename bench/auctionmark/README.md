@@ -67,8 +67,7 @@ To use a different server, set `-Dtriplox.host` and `-Dtriplox.port`.
 This experiment measures how many independent incremental queries Triplox can keep
 fresh while AuctionMark transactions change their results. It models the small,
 parameterized views used by syncing frameworks. It is not a traditional OLTP QPS
-comparison or a full AuctionMark implementation. See [RESULTS.md](RESULTS.md) for
-the initial bounded release run and its limitations.
+comparison or a full AuctionMark implementation.
 
 `clojure -M:sync` runs the live-query workload. Use the disposable launcher below for a reproducible local run.
 
