@@ -133,8 +133,10 @@ cache_mib = 4096
 The default fixture has 20 users and 100 items, generated from seed 42 using the
 AuctionMark branch's schema, generators, and write procedures. Initial views are
 populated with bids, watches, and unanswered questions. Every stage starts from the
-same logical fixture. Generated identities and procedure pools reset between stages;
-wall-clock timestamps and random entity UUIDs are not byte-for-byte reproducible.
+same logical fixture: after a stage, the driver compares the database with its state at
+the fixture's tx-key and transacts the difference back. Procedure pools reset between
+stages; wall-clock timestamps and random entity UUIDs are not byte-for-byte
+reproducible.
 
 | Query | Parameter | Result |
 |---|---|---|
@@ -161,13 +163,13 @@ The default stages are 5, 20, 50, and 100 subscriptions, at five committed
 transactions/second, with 10 seconds of warmup and 30 seconds of measurement each.
 The next stage runs only if the current stage has:
 
-- p95 transaction-submission-to-client-applied latency below 250 ms;
+- p95 catch-up time below 250 ms (see below);
 - at least 90% of the requested transaction rate;
-- no missing, unexpected, incorrect, or failed deliveries;
+- correct primed and final results, and no failed subscriptions;
 - combined sampled RSS within the memory budget.
 
-A stage with no measured deliveries cannot pass. Five seconds of delivery backlog
-aborts the stage. A failed run exits nonzero and retains its report. A passing smoke
+A stage with no probes cannot pass. A probe or the final catch-up that waits longer
+than five seconds (`--drain-ms`) fails the stage. A failed run exits nonzero and retains its report. A passing smoke
 run establishes only the tested counts for this fixture and machine, not a maximum
 capacity. Larger runs require explicit `--mode capacity` and subscription stages,
 with enough users (at least subscriptions/5) and items (at least users):
@@ -191,44 +193,38 @@ can still pin carrier threads in third-party blocking code.
 
 Result rows are checked against ordinary database queries twice, outside the timed
 window. Each subscription's primed result must equal the query at its registration
-tx-key. At the end of a stage, the driver drains expected deliveries, stops the
-consumers and compares every client result with the query at the tx-key its
-subscription has reached. Deltas are not checked individually while the stage runs.
-
-Latency needs to know which results a transaction changes. Before submitting a
-transaction, a small in-process reference model predicts this. The model only times
-deliveries; it does not check rows. After the response, the transaction ID becomes
-an expected delivery for each subscription the model predicted would change.
+tx-key. At the end of a stage, the driver waits until every subscription has reached
+the last transaction's tx-key, stops the consumers and compares every client result
+with the query at the tx-key its subscription has reached. Deltas are not checked
+individually while the stage runs.
 
 The server applies one SlateDB WAL batch of transactions at a time. One delta can
-therefore cover several transactions and carries the tx-key of the last one. Changes
-within a batch can cancel out, and a batch that leaves a result unchanged still sends
-an empty delta. The client consumes every delta, empty ones included, and applies its
-signed row weights. A change counts as delivered when its subscription first reaches
-a tx-key at or after the transaction, so an absent delivery cannot disappear from
-the latency statistics. A delta that arrives before its transaction's
-acknowledgement is parked until the acknowledgement arrives. Unchanged
-query/transaction pairs are counted separately. Warmup changes are excluded from
-latency and throughput samples.
+therefore cover several transactions and carries the tx-key of the last one; a batch
+that leaves a result unchanged still sends an empty delta. Each consumer applies every
+delta, empty ones included, and then publishes the tx-id it has reached.
 
-The timed write path does not issue verification queries. Model computation,
-procedure reads, HTTP encoding, and client scheduling still consume the same CPU
-budget. Low achieved write rate or scheduling delays can therefore indicate a
-client bottleneck rather than server capacity. Procedure reads happen before the
-submission timestamp; measured latency starts immediately before the transaction
-API call and includes its serialization and network time.
+Freshness is measured with probes. During the measurement window, the first transaction
+committed at least `--probe-ms` (500 ms) after the previous probe becomes a probe. A
+probe polls every millisecond until every subscription has reached the transaction's
+tx-id, and records the time since the transaction was submitted. This is the catch-up
+time of the slowest subscription. It starts immediately before the transaction API
+call, so it includes serialization, network time and the wait for the acknowledgement.
+No other per-subscription or per-delivery latency is tracked.
 
-Text output gives the stage verdict, achieved transaction rate, p95, missing
-updates, and combined RSS. JSON additionally includes initialization times,
-p50/p95/p99/max latency overall and by query family, acknowledgement latency,
-scheduling delay, fanout, unchanged pairs, final result sizes, errors, and per-process
-CPU, peak RSS, OS threads, and file descriptors. RSS is sampled every 500 ms and
+The timed write path does not issue verification queries. Procedure reads, HTTP
+encoding, and client scheduling still consume the same CPU budget. Low achieved write
+rate can therefore indicate a client bottleneck rather than server capacity.
+
+Text output gives the stage verdict, achieved transaction rate, catch-up p95 and
+probe count, and combined RSS. JSON additionally includes initialization times,
+p50/p95/p99/max catch-up time, final result sizes, errors, and per-process CPU, peak
+RSS, OS threads, and file descriptors. RSS is sampled every 500 ms and
 includes initialization and final verification, not just the measurement window.
 It is not the cgroup memory accounting used for enforcement. Unavailable process
 fields are null or have an error; remote/direct runs without server PIDs do not
 pretend to measure server resources. Reports include revisions, configured limits,
-and launcher metadata. Short runs and low-fanout families may have few samples;
-inspect each percentile's count.
+and launcher metadata. A 30 second stage has about 60 probes; inspect the count
+before reading the tail percentiles.
 
 ### WAL flush versus CDC polling
 
@@ -249,10 +245,8 @@ of the result.
 
 The live-query integration tests cover insertions, updates, retractions, duplicate
 rows, initially empty views, irrelevant writes, reconnect/priming, the existing
-AuctionMark procedures, and fixture restoration. Tracker tests cover delivery
-before acknowledgement, missing deliveries, deltas covering several transactions,
-and unchanged transactions. A two-stage driver test checks measurement and
-restoration together.
+AuctionMark procedures, and fixture restoration. A two-stage driver test checks
+probes and restoration together.
 Use a pooled dev server and the locally published JVM artifact:
 
 ```bash

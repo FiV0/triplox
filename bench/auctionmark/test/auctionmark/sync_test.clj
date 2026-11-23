@@ -11,19 +11,17 @@
 (deftest explicit-capacity-limits
   (is (= [5 20 50 100] (:stages (sync/validate-options defaults))))
   (doseq [changes [{:mode "capacity"} {:stages [101]} {:rate 0} {:rate Double/NaN}
-                   {:duration -1} {:stages [0]} {:users 1} {:warmup Double/POSITIVE_INFINITY}]]
+                   {:duration -1} {:probe-ms 0} {:stages [0]} {:users 1} {:warmup Double/POSITIVE_INFINITY}]]
     (is (thrown? clojure.lang.ExceptionInfo (sync/validate-options (merge defaults changes)))))
   (is (= [200] (:stages (sync/validate-options (merge defaults {:mode "capacity" :stages [200] :users 40}))))))
 
-(deftest measures-and-resets-two-stages
+(deftest probes-and-restores-two-stages
   (with-open [conn (fixture/connect)]
     (let [opts (merge defaults {:users 2 :items 4 :warmup 0 :duration 2 :sla-ms 5000})
-          baseline (live/load-fixture! conn opts)]
+          fixture (live/load-fixture! conn opts)]
       (doseq [n [5 10]]
-        (let [result (sync/run-stage! conn baseline opts n {:client (.pid (ProcessHandle/current))})]
+        (let [result (sync/run-stage! conn fixture opts n {:client (.pid (ProcessHandle/current))})]
           (is (:passed? result) (pr-str result))
-          (is (zero? (:missing-deliveries result)))
-          (is (zero? (:unmatched-deliveries result)))
-          (is (pos? (get-in result [:latency-ms :count])))
+          (is (pos? (get-in result [:catch-up-ms :count])))
           (is (< (:skipped-operations result) (:committed-transactions result)))
-          (fixture/assert-oracle conn (:model baseline) (live/queries 2 4 10)))))))
+          (fixture/assert-restored conn (:tx-key fixture)))))))

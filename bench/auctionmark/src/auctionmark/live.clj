@@ -1,5 +1,5 @@
 (ns auctionmark.live
-  "AuctionMark live queries and their small reference model."
+  "AuctionMark live queries, their fixture and the write workload."
   (:require [auctionmark.procedures :as proc]
             [auctionmark.schema :as schema]
             [clojure.walk :as walk]
@@ -94,78 +94,6 @@
           rows delta))
 
 ;; ---------------------------------------------------------------------------
-;; Reference model: {identity-attr {id doc}}
-
-(def identity-attributes
-  [:item/id :user-watch/id :item-bid/id :item-comment/id :item-image/id :user/id])
-
-(defn- tracked-entity
-  "The [identity-attr id] a put targets, or nil when the model doesn't track that entity."
-  [doc]
-  (let [[attr id] (or (some (fn [attr] (when (contains? doc attr) [attr (get doc attr)]))
-                            identity-attributes)
-                      (when (vector? (:db/id doc)) (:db/id doc)))]
-    (when (some #{attr} identity-attributes)
-      [attr id])))
-
-(defn apply-tx
-  "Apply the workload's puts and entity retractions to the reference model."
-  [model tx]
-  (reduce (fn [model op]
-            (cond
-              (map? op)
-              (if-let [path (tracked-entity op)]
-                (update-in model path merge (dissoc op :db/id))
-                model)
-
-              (= :db/retractEntity (first op))
-              (let [[_ [attr id]] op]
-                (update model attr dissoc id))
-
-              :else
-              (throw (ex-info "Unsupported workload transaction" {:op op}))))
-          model tx))
-
-(defn result-rows
-  "Expected result multiset of a live query, computed from the model."
-  [model {:keys [kind param]}]
-  (let [user [:user/id param]
-        item-by-ref (fn [[_ id]] (get-in model [:item/id id]))
-        rows (case kind
-               :item
-               (when-let [item (get-in model [:item/id param])]
-                 [(mapv item [:item/id :item/name :item/description :item/current-price :item/num-bids :item/status])])
-
-               :watchlist
-               (for [watch (vals (:user-watch/id model))
-                     :when (= user (:user-watch/user-id watch))
-                     :let [item (item-by-ref (:user-watch/item-id watch))]
-                     :when item]
-                 (mapv item [:item/id :item/name :item/current-price :item/status]))
-
-               :selling
-               (for [item (vals (:item/id model))
-                     :when (= user (:item/user-id item))
-                     :when (= :open (:item/status item))]
-                 (mapv item [:item/id :item/name :item/current-price :item/num-bids]))
-
-               :bids
-               (for [bid (vals (:item-bid/id model))
-                     :when (= user (:item-bid/buyer-id bid))
-                     :let [item (item-by-ref (:item-bid/item-id bid))]
-                     :when (= :open (:item/status item))]
-                 [(:item-bid/id bid) (:item/id item) (:item-bid/bid bid) (:item/current-price item)])
-
-               :questions
-               (for [comment (vals (:item-comment/id model))
-                     :when (= user (:item-comment/user-id comment))
-                     :when (= "" (:item-comment/response comment))
-                     :let [item (item-by-ref (:item-comment/item-id comment))]
-                     :when item]
-                 [(:item-comment/id comment) (:item/id item) (:item-comment/question comment)]))]
-    (frequencies rows)))
-
-;; ---------------------------------------------------------------------------
 ;; Fixture
 
 (defn transact! [conn tx]
@@ -199,26 +127,6 @@
       (reset! (get state k) @(proc/make-pool)))
     (doseq [id (range items)]
       (proc/pool-add! (:items-open state) (proc/->ItemSample id (mod id users) end-ms)))))
-
-(defn- read-item-docs [conn]
-  (->> (tc/q (tc/db conn)
-             '{:find [?id ?seller ?name ?description ?price ?bids ?status]
-               :where [[?i :item/id ?id]
-                       [?i :item/user-id ?u]
-                       [?u :user/id ?seller]
-                       [?i :item/name ?name]
-                       [?i :item/description ?description]
-                       [?i :item/current-price ?price]
-                       [?i :item/num-bids ?bids]
-                       [?i :item/status ?status]]})
-       (mapv (fn [[id seller name description price bids status]]
-               {:item/id id
-                :item/user-id [:user/id seller]
-                :item/name name
-                :item/description description
-                :item/current-price price
-                :item/num-bids bids
-                :item/status status}))))
 
 (defn- activity-docs
   "Each user watches up to three items, bids on the item with their id and asks one open question."
@@ -266,32 +174,35 @@
     (proc/generate-users! conn state rng users)
     (tc/db conn (proc/generate-items! conn state rng items))
     (open-all-items! conn state users items)
-    (let [item-docs (read-item-docs conn)
-          user-docs (for [u (range users)] {:user/id u :user/balance 0.0})
-          activity (activity-docs state users items)
-          bid-counts (mapv (fn [u] {:db/id [:item/id u] :item/num-bids 1}) (range users))]
-      (transact! conn (into activity bid-counts))
+    (let [activity (activity-docs state users items)
+          bid-counts (mapv (fn [u] {:db/id [:item/id u] :item/num-bids 1}) (range users))
+          result (transact! conn (into activity bid-counts))]
       {:state state
-       :model (-> {}
-                  (apply-tx (concat item-docs user-docs activity))
-                  (apply-tx bid-counts))})))
+       :tx-key (select-keys result [:tx-id :system-time])})))
+
+(defn- datoms
+  "Every [e a v] of the schema's attributes in db."
+  [db]
+  (set (for [a (map :db/ident schema/schema-tx)
+             [e v] (tc/q db {:find '[?e ?v] :where [['?e a '?v]]})]
+         [e a v])))
 
 (defn restore!
-  "Transact the database back to the baseline model."
-  [conn current baseline]
-  (let [deletes (for [attr identity-attributes
-                      id (keys (get current attr))
-                      :when (not (contains? (get baseline attr) id))]
-                  [:db/retractEntity [attr id]])
-        ;; the fixture has no max-bid records, and the model does not track them
-        max-bids (for [[e] (tc/q (tc/db conn) '{:find [?m]
-                                                 :where [[?m :item-max-bid/item-id ?i]]})]
-                   [:db/retractEntity e])
-        puts (for [attr identity-attributes
-                   [id doc] (get baseline attr)]
-               (cond-> (assoc doc attr id)
-                 (contains? (get current attr) id) (assoc :db/id [attr id])))]
-    (doseq [batch (partition-all 128 (concat deletes max-bids puts))]
+  "Transact the database back to its state at tx-key: undo attribute changes on the
+  entities that existed then, and retract the entities created since."
+  [conn tx-key]
+  (let [before (datoms (tc/db conn tx-key))
+        now (datoms (tc/db conn))
+        existed (set (map first before))
+        adds (remove now before)
+        ;; Attributes are cardinality-one, so an add already replaces the current value.
+        replaced (set (map (fn [[e a]] [e a]) adds))
+        retracts (for [[e a v :as d] now
+                       :when (and (existed e) (not (before d)) (not (replaced [e a])))]
+                   [:db/retract e a v])
+        created (for [e (distinct (map first now)) :when (not (existed e))]
+                  [:db/retractEntity e])]
+    (doseq [batch (partition-all 128 (concat (map #(into [:db/add] %) adds) retracts created))]
       (transact! conn (vec batch)))))
 
 ;; ---------------------------------------------------------------------------
@@ -299,11 +210,15 @@
 
 (defn- toggle-watch!
   "Drop one of a random user's watches, or add a watch on a random item."
-  [conn ^Random rng state model]
+  [conn ^Random rng state]
   (let [u (proc/pick-random-user rng state)
-        watches (filter #(= [:user/id u] (:user-watch/user-id %)) (vals (:user-watch/id model)))]
+        watches (sort (map first (tc/q (tc/db conn)
+                                       {:find '[?id]
+                                        :where [['?u :user/id u]
+                                                '[?w :user-watch/user-id ?u]
+                                                '[?w :user-watch/id ?id]]})))]
     (if (and (seq watches) (.nextBoolean rng))
-      (proc/transact! conn state [[:db/retractEntity [:user-watch/id (:user-watch/id (first watches))]]])
+      (proc/transact! conn state [[:db/retractEntity [:user-watch/id (first watches)]]])
       (when-let [item (proc/pick-random-item rng state)]
         (proc/transact! conn state [{:user-watch/id (proc/next-id (:watch-counter state))
                                      :user-watch/user-id [:user/id u]
@@ -322,12 +237,12 @@
 
 (defn mutate!
   "The original write procedures plus watch membership and explicit auction transitions."
-  [conn ^Random rng state model]
+  [conn ^Random rng state]
   (let [choice (.nextInt rng 100)]
     (cond
       (< choice 50) (proc/proc-new-bid conn rng state)
       (< choice 65) (proc/proc-new-item conn rng state)
-      (< choice 80) (toggle-watch! conn rng state model)
+      (< choice 80) (toggle-watch! conn rng state)
       (< choice 90) (if (.nextBoolean rng)
                       (proc/proc-new-comment conn rng state)
                       (proc/proc-new-comment-response conn rng state))

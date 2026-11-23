@@ -8,13 +8,10 @@
   (tc/connect (System/getProperty "triplox.host" "localhost")
               (Integer/parseInt (System/getProperty "triplox.port" "5490"))))
 
-(defn assert-oracle
-  "Every descriptor's query result matches the model."
-  [conn model descriptors]
-  (let [db (tc/db conn)]
-    (doseq [d descriptors]
-      (is (= (live/result-rows model d) (frequencies (tc/q db (:query d))))
-          (str (:kind d) " " (:param d))))))
+(defn assert-restored
+  "The schema's datoms are the same as at tx-key."
+  [conn tx-key]
+  (is (= (#'live/datoms (tc/db conn tx-key)) (#'live/datoms (tc/db conn)))))
 
 (defn- apply-next-delta! [{:keys [sub rows]}]
   (swap! rows live/apply-delta (tc/take! sub 5000)))
@@ -53,51 +50,57 @@
 
 (deftest live-queries-track-auction-changes
   (with-open [conn (connect)]
-    (let [{baseline :model} (live/load-fixture! conn {:users 2 :items 4 :seed 42})
+    (let [{:keys [tx-key]} (live/load-fixture! conn {:users 2 :items 4 :seed 42})
           ;; Watchlist of user 9, who only appears in a later transaction.
           empty-watchlist (assoc (nth (live/queries 10 4 50) 46) :id 10)
           descriptors (conj (live/queries 2 4 10) empty-watchlist)
-          model (atom baseline)
           subs (mapv #(assoc % :sub (tc/subscribe conn (:query %)) :rows (atom {})) descriptors)]
       (try
         (doseq [s subs]
           (assert-primed conn s))
         (doseq [tx auction-changes]
-          (let [after (swap! model live/apply-tx tx)
-                result (live/transact! conn tx)]
+          (let [result (live/transact! conn tx)]
             (doseq [s subs]
               (catch-up! s (:tx-id result))
               (is (= (:tx-id result) (:tx-id (tc/tx-key (:sub s)))))
-              (assert-current conn s))
-            (assert-oracle conn after descriptors)))
+              (assert-current conn s))))
         (finally
           (doseq [{:keys [sub]} subs]
             (.close sub))))
       ;; A late subscriber starts from the current result.
       (with-open [sub (tc/subscribe conn (:query (first descriptors)))]
         (assert-primed conn {:sub sub :rows (atom {}) :query (:query (first descriptors))}))
-      (live/restore! conn @model baseline)
-      (assert-oracle conn baseline descriptors))))
+      (live/restore! conn tx-key)
+      (assert-restored conn tx-key))))
 
-(deftest original-procedures-and-model-agree
+(deftest original-procedures-keep-subscriptions-current
   (with-open [conn (connect)]
-    (let [{baseline :model state :state} (live/load-fixture! conn {:users 2 :items 4 :seed 19})
-          model (atom baseline)
+    (let [{:keys [state tx-key]} (live/load-fixture! conn {:users 2 :items 4 :seed 19})
           writes (atom 0)
+          last-tx-id (atom (:tx-id tx-key))
           working-state (assoc (live/copy-state state)
                                :transact (fn [c tx]
                                            (let [result (live/transact! c tx)]
-                                             (swap! model live/apply-tx tx)
+                                             (reset! last-tx-id (:tx-id result))
                                              (swap! writes inc)
                                              result)))
-          descriptors (live/queries 2 4 10)
+          subs (mapv #(assoc % :sub (tc/subscribe conn (:query %)) :rows (atom {}))
+                     (live/queries 2 4 10))
           rng (Random. 17)]
-      (dotimes [_ 30]
-        (live/mutate! conn rng working-state @model)
-        (assert-oracle conn @model descriptors))
+      (try
+        (doseq [s subs]
+          (assert-primed conn s))
+        (dotimes [_ 30]
+          (live/mutate! conn rng working-state)
+          (doseq [s subs]
+            (catch-up! s @last-tx-id)
+            (assert-current conn s)))
+        (finally
+          (doseq [{:keys [sub]} subs]
+            (.close sub))))
       (is (pos? @writes))
-      (live/restore! conn @model baseline)
-      (assert-oracle conn baseline descriptors))))
+      (live/restore! conn tx-key)
+      (assert-restored conn tx-key))))
 
 (deftest rejects-negative-client-weights
   (is (thrown? clojure.lang.ExceptionInfo (live/apply-delta {} [[[1] -1]]))))
