@@ -30,7 +30,8 @@
    [nil "--duration SECONDS" "Measurement per stage" :default 30.0 :parse-fn parse-double]
    [nil "--sla-ms MS" "Maximum p95 time until every subscription reaches a transaction" :default 250.0 :parse-fn parse-double]
    [nil "--probe-ms MS" "Interval between catch-up probes" :default 500 :parse-fn parse-long]
-   [nil "--drain-ms MS" "Maximum wait for every subscription to catch up" :default 5000 :parse-fn parse-long]
+   [nil "--probe-timeout-ms MS" "Maximum wait for every subscription to reach a probe" :default 5000 :parse-fn parse-long]
+   [nil "--drain-ms MS" "Maximum wait at stage end for every subscription to catch up" :default 30000 :parse-fn parse-long]
    [nil "--memory-mib N" "Combined sampled RSS limit" :default 8192 :parse-fn parse-long]
    [nil "--server-pid PID" "Server process to sample" :parse-fn parse-long]
    [nil "--storage-pid PID" "Object storage process to sample" :parse-fn parse-long]
@@ -45,7 +46,7 @@
                    (or (= "smoke" mode) (:stages opts))
                    (seq stages)
                    (every? positive? stages)
-                   (every? positive? (map opts [:port :users :items :rate :duration :sla-ms :probe-ms :drain-ms :memory-mib]))
+                   (every? positive? (map opts [:port :users :items :rate :duration :sla-ms :probe-ms :probe-timeout-ms :drain-ms :memory-mib]))
                    (number? warmup)
                    (Double/isFinite (double warmup))
                    (<= 0 warmup)
@@ -156,7 +157,7 @@
 (defn- probe!
   "Record how long after its submission the last subscription reached the transaction."
   [entries tracker opts {:keys [tx-id start-ns]}]
-  (if (await-catch-up! entries tx-id (:drain-ms opts))
+  (if (await-catch-up! entries tx-id (:probe-timeout-ms opts))
     (swap! tracker update :catch-up-ms conj (/ (- (System/nanoTime) start-ns) 1e6))
     (error! tracker {:error :catch-up-timeout :tx-id tx-id})))
 
@@ -282,7 +283,7 @@
       (finally
         (reset! sampling false)
         (.join sampler 2000)
-        ;; Probes give up after drain-ms.
+        ;; Probes give up after probe-timeout-ms.
         (doseq [^Thread probe @probes]
           (.join probe))
         (close-subscriptions! @entries running)

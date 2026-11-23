@@ -168,8 +168,9 @@ The next stage runs only if the current stage has:
 - correct primed and final results, and no failed subscriptions;
 - combined sampled RSS within the memory budget.
 
-A stage with no probes cannot pass. A probe or the final catch-up that waits longer
-than five seconds (`--drain-ms`) fails the stage. A failed run exits nonzero and retains its report. A passing smoke
+A stage with no probes cannot pass. A probe that waits longer than five seconds
+(`--probe-timeout-ms`), or a final catch-up that waits longer than 30 seconds
+(`--drain-ms`), fails the stage. A failed run exits nonzero and retains its report. A passing smoke
 run establishes only the tested counts for this fixture and machine, not a maximum
 capacity. Larger runs require explicit `--mode capacity` and subscription stages,
 with enough users (at least subscriptions/5) and items (at least users):

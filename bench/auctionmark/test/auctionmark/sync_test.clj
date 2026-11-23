@@ -11,7 +11,7 @@
 (deftest explicit-capacity-limits
   (is (= [5 20 50 100] (:stages (sync/validate-options defaults))))
   (doseq [changes [{:mode "capacity"} {:stages [101]} {:rate 0} {:rate Double/NaN}
-                   {:duration -1} {:probe-ms 0} {:stages [0]} {:users 1} {:warmup Double/POSITIVE_INFINITY}]]
+                   {:duration -1} {:probe-ms 0} {:probe-timeout-ms 0} {:drain-ms 0} {:stages [0]} {:users 1} {:warmup Double/POSITIVE_INFINITY}]]
     (is (thrown? clojure.lang.ExceptionInfo (sync/validate-options (merge defaults changes)))))
   (is (= [200] (:stages (sync/validate-options (merge defaults {:mode "capacity" :stages [200] :users 40}))))))
 
