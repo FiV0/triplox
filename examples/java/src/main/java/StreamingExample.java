@@ -39,6 +39,10 @@ public final class StreamingExample {
             try (Subscription sub = node.subscribe("[:find ?name :where [?e :name ?name]]")) {
                 System.out.println("Subscribed at tx_id=" + sub.registrationTxKey().txId() + ".");
 
+                // The first delta is the priming result at the registration basis, also when it is empty.
+                Delta priming = sub.poll(5, TimeUnit.SECONDS);
+                System.out.println("Priming delta: " + priming.rows());
+
                 for (var name : new String[] {"alice", "bob", "carol"}) {
                     node.executeTx(list(new TxOp.Put(map(":name", name))));
                 }

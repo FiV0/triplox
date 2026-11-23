@@ -7,10 +7,15 @@
 //! Then run this example (from examples/rust/):
 //!   cargo run --bin streaming-example
 
-use anyhow::Result;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
 use futures::StreamExt;
+use tokio::time::timeout;
 use triplox_client::edn::{kw, Keyword};
-use triplox_client::{ClientNode, DataType, SubmitNode, TransactionResult, TxOp};
+use triplox_client::{
+    ClientNode, DataType, Delta, SubmitNode, Subscription, TransactionResult, TxOp,
+};
 
 /// Build a schema attribute definition as a Put document.
 fn schema_attribute(name: &str, value_type: &str) -> TxOp {
@@ -25,6 +30,16 @@ fn schema_attribute(name: &str, value_type: &str) -> TxOp {
             DataType::Keyword(kw!(:db.cardinality/one)),
         ),
     ])
+}
+
+/// Wait up to `wait` for the next delta; `None` means no delta arrived in time.
+async fn next_delta(sub: &mut Subscription, wait: Duration) -> Result<Option<Delta>> {
+    match timeout(wait, sub.next()).await {
+        Err(_) => Ok(None),
+        Ok(Some(Ok(delta))) => Ok(Some(delta)),
+        Ok(Some(Err(err))) => anyhow::bail!("subscription error: {err}"),
+        Ok(None) => anyhow::bail!("subscription stream ended"),
+    }
 }
 
 #[tokio::main]
@@ -50,6 +65,13 @@ async fn main() -> Result<()> {
         .await?;
     println!("Subscribed at tx_id={}.", sub.registration_tx_key().tx_id);
 
+    // The first delta is the priming result at the registration basis, also when it is empty.
+    let wait = Duration::from_secs(5);
+    let priming = next_delta(&mut sub, wait)
+        .await?
+        .context("no priming delta")?;
+    println!("Priming delta: {:?}", priming.rows);
+
     // Transact three names; each produces a delta on the subscription.
     for name in ["alice", "bob", "carol"] {
         node.execute_tx(vec![TxOp::put([(kw!(:name), name.into())])])
@@ -59,18 +81,13 @@ async fn main() -> Result<()> {
     // Print the next three deltas, then drop the subscription (unsubscribe).
     println!("Waiting for deltas...");
     for _ in 0..3 {
-        match sub.next().await {
-            Some(Ok(delta)) => {
-                println!("Consumed through {:?}.", sub.tx_key().unwrap());
-                for (row, weight) in delta.rows {
-                    println!("  {row:?}  (weight {weight})");
-                }
-            }
-            Some(Err(err)) => anyhow::bail!("subscription error: {err}"),
-            None => {
-                println!("Stream ended.");
-                break;
-            }
+        let Some(delta) = next_delta(&mut sub, wait).await? else {
+            println!("No more deltas.");
+            break;
+        };
+        println!("Consumed through {:?}.", sub.tx_key().unwrap());
+        for (row, weight) in delta.rows {
+            println!("  {row:?}  (weight {weight})");
         }
     }
 

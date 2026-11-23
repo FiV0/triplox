@@ -53,8 +53,8 @@ From the `examples/java/` directory:
 
 ### simple-example
 
-Connects to the running server, defines `:name` and `:age` schema attributes, inserts two documents (alice and bob), queries them back, and prints the results.
+The simple example, defines schema, add data for the new schema and queries the data back.
 
 ### streaming-example
 
-Defines a `:name` attribute, subscribes to `[:find ?name :where [?e :name ?name]]`, transacts a few names, and prints the result delta (`[values weight]`) the subscription emits for each transaction. Run against the default in-memory server (one shared node), so the subscription and the transactions share state.
+The streaming example, defines schema, subscribes to changes for the new attribute, submits 3 transactions with data for the new attribute, awaits at most 3 deltas from the subscription and finally closes the subscription.
