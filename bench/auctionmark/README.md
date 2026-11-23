@@ -185,6 +185,32 @@ Do not run larger stages automatically after a failed smoke test. For a short
 functional check, override `--stages 5 --warmup 1 --duration 3`; such a small sample
 is not a freshness or capacity conclusion.
 
+### Scaling
+
+A transaction usually touches one or two users, such as the buyer and the seller. It
+changes only their queries, so it changes about 2 queries at any scale. The changed
+fraction is therefore about 1 / (2 × users). With the default 20 users, that is about
+2.5%. Subscription and item counts have little effect.
+
+For larger runs, use users = queries / 5 and items = 5 × users, at five transactions
+per second. Two workloads measure different costs:
+
+- **A. Per-user** (current): each transaction changes about 2 queries. This measures
+  the cost of idle queries, because every WAL batch sends a delta to every
+  subscription.
+- **B. Hot items** (not implemented): 4 hot items that never close get half of all
+  bids. Each user watches one hot item, and item-detail queries point at hot items.
+  A transaction changes about 2.5% of the queries at every scale. This measures the
+  cost of many non-empty deltas.
+
+| Queries | Users | Items | Changed per tx, A | Changed per tx, B | Watchers per hot item |
+|---|---|---|---|---|---|
+| 1,000 | 200 | 1,000 | ~2 (0.2%) | ~25 | 50 |
+| 10,000 | 2,000 | 10,000 | ~2 (0.02%) | ~250 | 500 |
+| 100,000 | 20,000 | 100,000 | ~2 (0.002%) | ~2,500 | 5,000 |
+
+These numbers are estimates from the workload code, not measurements.
+
 ### What the measurements mean
 
 One Java 21 virtual thread reads each HTTP subscription and another consumes its
