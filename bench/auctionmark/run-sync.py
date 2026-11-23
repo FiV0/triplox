@@ -6,11 +6,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import socket
 import string
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 import uuid
@@ -19,6 +21,9 @@ RUSTFS_IMAGE = "rustfs/rustfs:1.0.0"
 RC_IMAGE = "rustfs/rc:v0.1.36"
 BENCH = Path(__file__).resolve().parent
 REPO = BENCH.parent.parent
+PAGE_SIZE = os.sysconf("SC_PAGE_SIZE")
+TICKS = os.sysconf("SC_CLK_TCK")
+UNITS = {"B": 1, "kB": 10**3, "KiB": 2**10, "MB": 10**6, "MiB": 2**20, "GB": 10**9, "GiB": 2**30}
 
 
 def run(*args, **kwargs):
@@ -65,6 +70,111 @@ def free_ports(count):
     finally:
         for sock in sockets:
             sock.close()
+
+
+def process_tree(root):
+    """root and all its descendants, from the parent PIDs in /proc."""
+    children = {}
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdigit():
+            try:
+                ppid = int((entry / "stat").read_text().rsplit(")", 1)[1].split()[1])
+            except (OSError, IndexError, ValueError):
+                continue
+            children.setdefault(ppid, []).append(int(entry.name))
+    pids, pending = [], [root]
+    while pending:
+        pid = pending.pop()
+        pids.append(pid)
+        pending.extend(children.get(pid, []))
+    return pids
+
+
+def tree_sample(root):
+    """Summed RSS, CPU time, threads and open files of a process tree, or None after it exits."""
+    if not Path(f"/proc/{root}").exists():
+        return None
+    sample = {"rss-bytes": 0, "cpu-seconds": 0.0, "threads": 0, "file-descriptors": 0}
+    for pid in process_tree(root):
+        try:
+            # Fields after the command name, starting at field 3 (state).
+            fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+            descriptors = len(os.listdir(f"/proc/{pid}/fd"))
+        except OSError:
+            continue
+        sample["cpu-seconds"] += (int(fields[11]) + int(fields[12])) / TICKS
+        sample["threads"] += int(fields[17])
+        sample["rss-bytes"] += int(fields[21]) * PAGE_SIZE
+        sample["file-descriptors"] += descriptors
+    return sample
+
+
+def container_sample(name):
+    try:
+        stats = run("docker", "stats", "--no-stream", "--format", "{{json .}}", name,
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+        return {"rustfs": json.loads(stats)}
+    except (subprocess.SubprocessError, ValueError):
+        return {"error": "docker stats failed"}
+
+
+def record(path, take, interval, stop):
+    """Append a timestamped sample to path every interval seconds until stop is set."""
+    with path.open("w") as out:
+        while not stop.is_set():
+            out.write(json.dumps({"at": time.time(), **take()}) + "\n")
+            out.flush()
+            stop.wait(interval)
+
+
+def size_bytes(text):
+    number, unit = re.fullmatch(r"([\d.]+)\s*([A-Za-z]+)", text.strip()).groups()
+    return float(number) * UNITS[unit]
+
+
+def summarize(directory):
+    """Peaks and average CPU per process tree and for the RustFS container."""
+    def samples(name):
+        path = directory / name
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    processes, containers, summary = samples("processes.jsonl"), samples("containers.jsonl"), {}
+    for role in ("server", "client"):
+        seen = [(s["at"], s["processes"][role]) for s in processes if s["processes"][role]]
+        if seen:
+            (start, first), (end, last) = seen[0], seen[-1]
+            summary[role] = {
+                "peak-rss-mib": max(p["rss-bytes"] for _, p in seen) / 2**20,
+                "peak-threads": max(p["threads"] for _, p in seen),
+                "peak-file-descriptors": max(p["file-descriptors"] for _, p in seen),
+                "average-cpu-cores": (last["cpu-seconds"] - first["cpu-seconds"]) / (end - start) if end > start else None}
+    rustfs = [s["rustfs"] for s in containers if "rustfs" in s]
+    if rustfs:
+        summary["rustfs"] = {
+            "peak-memory-mib": max(size_bytes(s["MemUsage"].split("/")[0]) for s in rustfs) / 2**20,
+            "average-cpu-percent": sum(float(s["CPUPerc"].rstrip("%")) for s in rustfs) / len(rustfs)}
+    # Server and client are sampled together; the RustFS peak is added as an upper bound.
+    summary["combined-peak-mib"] = (
+        max((sum(p["rss-bytes"] for p in s["processes"].values() if p) for s in processes), default=0) / 2**20
+        + summary.get("rustfs", {}).get("peak-memory-mib", 0))
+    return summary
+
+
+def add_resources(directory, limit_mib, exit_code):
+    """Add the resource summary to the client's report and fail the run above limit_mib."""
+    summary = summarize(directory)
+    (directory / "resources.json").write_text(json.dumps(summary, indent=2) + "\n")
+    print(f"Combined peak memory {summary['combined-peak-mib']:.0f} MiB (limit {limit_mib} MiB)", flush=True)
+    over = summary["combined-peak-mib"] > limit_mib
+    report = directory / "report.json"
+    if report.exists():
+        data = json.loads(report.read_text())
+        data["resources"] = summary
+        if over:
+            data["passed?"] = False
+            data["failed-checks"] = data.get("failed-checks", []) + ["memory"]
+        report.write_text(json.dumps(data))
+    return 1 if over else exit_code
 
 
 def interrupted(signum, _frame):
@@ -131,7 +241,6 @@ def benchmark(args, benchmark_args):
             if attempt == 19:
                 raise RuntimeError("RustFS bucket setup failed: " + result.stderr)
             time.sleep(0.25)
-        rustfs_pid = output("docker", "inspect", "--format", "{{.State.Pid}}", name)
         temporary = directory / "tmp"
         temporary.mkdir()
         environment = {**os.environ, "TOKIO_WORKER_THREADS": "2", "TMPDIR": str(temporary),
@@ -146,11 +255,26 @@ def benchmark(args, benchmark_args):
                        "nice", "-n", "10",
                        "clojure", "-J-Xmx768m", "-J-XX:ActiveProcessorCount=2", "-M:sync",
                        *benchmark_args, "--host", "127.0.0.1", "--port", str(port),
-                       "--server-pid", str(server.pid), "--storage-pid", rustfs_pid,
-                       "--memory-mib", str(metadata["combined_memory_mib"]),
                        "--output", str(directory / "report.json")]
             client = subprocess.Popen(command, cwd=BENCH, env=environment, start_new_session=True)
-            result = client.wait(timeout=args.timeout)
+            # Sampling runs here, outside the measured processes. docker stats takes about a second.
+            sampling = threading.Event()
+            samplers = [
+                threading.Thread(target=record, daemon=True, args=(
+                    directory / "processes.jsonl",
+                    lambda: {"processes": {"server": tree_sample(server.pid), "client": tree_sample(client.pid)}},
+                    0.5, sampling)),
+                threading.Thread(target=record, daemon=True, args=(
+                    directory / "containers.jsonl", lambda: container_sample(name), 1, sampling))]
+            for sampler in samplers:
+                sampler.start()
+            try:
+                result = client.wait(timeout=args.timeout)
+            finally:
+                sampling.set()
+                for sampler in samplers:
+                    sampler.join(timeout=10)
+            result = add_resources(directory, metadata["combined_memory_mib"], result)
             metadata["exit_code"] = result
             return result
     except Exception as error:

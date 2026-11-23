@@ -3,8 +3,7 @@
             [auctionmark.live-test :as fixture]
             [auctionmark.sync :as sync]
             [clojure.test :refer [deftest is]]
-            [clojure.tools.cli :as cli])
-  (:import [java.lang ProcessHandle]))
+            [clojure.tools.cli :as cli]))
 
 (def defaults (:options (cli/parse-opts [] sync/options)))
 
@@ -18,7 +17,7 @@
   (with-open [conn (fixture/connect)]
     (let [opts (merge defaults {:users 2 :items 4 :subscriptions 10 :warmup 0 :duration 2 :sla-ms 5000})
           state (live/load-fixture! conn opts)
-          result (sync/run-benchmark! conn state opts {:client (.pid (ProcessHandle/current))})]
+          result (sync/run-benchmark! conn state opts)]
       (is (:passed? result) (pr-str result))
       (is (pos? (get-in result [:catch-up-ms :count])))
       (is (pos? (:final-catch-up-ms result)))

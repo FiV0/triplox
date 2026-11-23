@@ -118,17 +118,17 @@ Launcher options come first; arguments after `--` go to the Clojure driver.
 | `-- --sla-ms MS` | 250 | Maximum p95 catch-up time |
 | `-- --probe-ms MS` | 500 | Interval between catch-up probes |
 
-The launcher sets `--host`, `--port`, `--server-pid`, `--storage-pid`, `--memory-mib`,
-and `--output` itself and overrides any values passed after `--`.
+The launcher sets `--host`, `--port` and `--output` itself and overrides any values
+passed after `--`.
 
 Triplox runs as a plain process with **no memory or CPU limit** from the launcher. The
 JVM client has its own systemd scope with a two-core quota and 2 GiB memory limit; its
 heap remains capped at 768 MiB. RustFS has a separate 0.25-core quota and 768 MiB memory
-limit. The launcher's combined sampled RSS threshold is 75% of host RAM plus 2 GiB for
+limit. The launcher's combined memory threshold is 75% of host RAM plus 2 GiB for
 the client and 768 MiB for RustFS. Swapping is disabled in the client scope and the
 RustFS container. Bucket creation uses a small short-lived `rc` container before the
 server starts. The launcher requires the client scope to succeed. The direct Clojure
-command only samples RSS; it does not install these operating-system limits.
+command neither measures resources nor installs these operating-system limits.
 
 DBSP's process RSS pressure threshold is 75% of the smaller of host RAM and the
 cgroup memory limit reported by sysinfo. With no limit on the
@@ -187,7 +187,7 @@ user has live queries, so most writes change at least one subscription. The run 
 - p95 catch-up time below 250 ms (see below);
 - at least 90% of the requested transaction rate;
 - correct primed and final results, and no failed subscriptions;
-- combined sampled RSS within the memory budget.
+- combined peak memory within the launcher's threshold (launcher runs only).
 
 A run with no probes cannot pass. Probes and the final catch-up have no timeout: however
 late the subscriptions are, the driver waits for them and records the time, and only
@@ -267,14 +267,23 @@ encoding, and client scheduling still consume the same CPU budget. Low achieved 
 rate can therefore indicate a client bottleneck rather than server capacity.
 
 Text output gives the verdict, achieved transaction rate, catch-up p95, max and
-probe count, final catch-up time, and combined RSS. JSON additionally includes initialization times,
-p50/p95/p99/max catch-up time, final result sizes, errors, and per-process CPU, peak
-RSS, OS threads, and file descriptors. RSS is sampled every 500 ms and
-includes initialization and final verification, not just the measurement window.
-It is not the cgroup memory accounting used for enforcement. Unavailable process
-fields are null or have an error; remote/direct runs without server PIDs do not
-pretend to measure server resources. Reports include revisions, configured limits,
-and launcher metadata. A 30 second measurement has about 60 probes; inspect the count
+probe count, and final catch-up time. JSON additionally includes initialization times,
+p50/p95/p99/max catch-up time, final result sizes and errors. Reports include
+revisions, configured limits, and launcher metadata.
+
+The launcher measures resources from outside the measured processes, as the JOB
+benchmark does. Every 500 ms it reads `/proc` for the server and client process
+trees: RSS, CPU time, OS threads and open file descriptors, summed over each tree.
+About once a second it records `docker stats` for the RustFS container, which reports
+the container's cgroup memory and CPU. Samples go to `processes.jsonl` and
+`containers.jsonl`. After the client exits, the launcher writes peaks and average CPU
+to `resources.json` and adds them to `report.json` as `resources`. Sampling covers
+initialization and final verification, not just the measurement window.
+
+The combined peak is the largest summed server and client RSS of one sample, plus the
+RustFS peak. If it exceeds the threshold, the launcher marks the report as failed with
+a `memory` check and exits nonzero. The check runs after the client exits, so it does
+not stop a run early. Process RSS is not the cgroup accounting that limits enforce. A 30 second measurement has about 60 probes; inspect the count
 before reading the tail percentiles.
 
 ### WAL flush versus CDC polling

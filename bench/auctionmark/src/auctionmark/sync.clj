@@ -4,14 +4,12 @@
   last subscription reaches a probed transaction's tx-key."
   (:refer-clojure :exclude [run!])
   (:require [auctionmark.live :as live]
-            [auctionmark.resources :as resources]
             [clojure.data.json :as json]
             [clojure.java.shell :as shell]
             [clojure.string :as str]
             [clojure.tools.cli :as cli]
             [xyz.triplox.api :as tc])
-  (:import [java.lang ProcessHandle]
-           [java.time Instant]
+  (:import [java.time Instant]
            [java.util Random]))
 
 ;; ---------------------------------------------------------------------------
@@ -29,16 +27,13 @@
    [nil "--duration SECONDS" "Measured writes" :default 30.0 :parse-fn parse-double]
    [nil "--sla-ms MS" "Maximum p95 time until every subscription reaches a transaction" :default 250.0 :parse-fn parse-double]
    [nil "--probe-ms MS" "Interval between catch-up probes" :default 500 :parse-fn parse-long]
-   [nil "--memory-mib N" "Combined sampled RSS limit" :default 8192 :parse-fn parse-long]
-   [nil "--server-pid PID" "Server process to sample" :parse-fn parse-long]
-   [nil "--storage-pid PID" "Object storage process to sample" :parse-fn parse-long]
    [nil "--output PATH" "JSON report" :default "sync-report.json"]
    ["-h" "--help"]])
 
 (defn validate-options [opts]
   (let [{:keys [users items subscriptions warmup]} opts
         positive? #(and (number? %) (Double/isFinite (double %)) (pos? %))]
-    (when-not (and (every? positive? (map opts [:port :users :items :subscriptions :rate :duration :sla-ms :probe-ms :memory-mib]))
+    (when-not (and (every? positive? (map opts [:port :users :items :subscriptions :rate :duration :sla-ms :probe-ms]))
                    (number? warmup)
                    (Double/isFinite (double warmup))
                    (<= 0 warmup)
@@ -133,11 +128,9 @@
     (when (pos? ms)
       (Thread/sleep (long (Math/ceil ms))))))
 
-(defn check-limits! [tracker samples opts]
+(defn check-errors! [tracker]
   (when (seq (:errors @tracker))
-    (throw (ex-info "Subscription error" {})))
-  (when (> (resources/combined-rss (last @samples)) (:memory-mib opts))
-    (throw (ex-info "Combined process RSS exceeded memory limit" {}))))
+    (throw (ex-info "Subscription error" {}))))
 
 (defn- jittered-interval-ns
   "Time to the next transaction at the target rate, with +-10% jitter."
@@ -153,9 +146,9 @@
 (defn tracked-transactor
   "A transact fn that paces writes and, in the measured window, probes one transaction
   every probe-ms."
-  [{:keys [entries tracker running opts samples measured-start end next-due next-probe pacing-rng probes]}]
+  [{:keys [entries tracker running opts measured-start end next-due next-probe pacing-rng probes]}]
   (fn [conn tx]
-    (check-limits! tracker samples opts)
+    (check-errors! tracker)
     (let [scheduled @next-due]
       (pause-until! scheduled)
       (let [start (System/nanoTime)
@@ -173,7 +166,7 @@
 
 (defn- run-workload!
   "Run random mutations through the tracked transactor for warmup plus duration."
-  [conn state {:keys [tracker samples skipped opts] :as ctx}]
+  [conn state {:keys [tracker skipped opts] :as ctx}]
   (let [begin (System/nanoTime)
         measured-start (+ begin (long (* 1e9 (:warmup opts))))
         end (+ measured-start (long (* 1e9 (:duration opts))))
@@ -191,7 +184,7 @@
         (when (= before (:last-tx-id @tracker))
           (swap! skipped inc)
           (Thread/sleep 10)))
-      (check-limits! tracker samples opts))))
+      (check-errors! tracker))))
 
 (defn- drain!
   "Wait for every subscription to reach the last transaction and record how long after
@@ -214,14 +207,6 @@
 ;; ---------------------------------------------------------------------------
 ;; Run
 
-(defn- start-sampler!
-  "Sample process resources every 500ms while sampling is true."
-  [samples sampling pids]
-  (.start (Thread/ofVirtual)
-          ^Runnable #(while @sampling
-                       (Thread/sleep 500)
-                       (swap! samples conj (resources/sample pids)))))
-
 (defn percentiles [samples]
   (let [values (vec (sort samples))
         n (count values)
@@ -232,27 +217,23 @@
      :p99 (at 0.99)
      :max (last values)}))
 
-(defn- failed-checks [entries metrics resources opts]
+(defn- failed-checks [entries metrics opts]
   (let [p95 (get-in metrics [:catch-up-ms :p95])]
     (cond-> []
       (not= (:subscriptions opts) (count entries)) (conj :initialization)
       (seq (:errors metrics)) (conj :correctness-or-runtime)
       (nil? p95) (conj :no-probes)
       (and p95 (>= p95 (:sla-ms opts))) (conj :freshness)
-      (< (:transactions-per-second metrics) (* 0.9 (:rate opts))) (conj :write-rate)
-      (> (:combined-peak-rss-mib resources) (:memory-mib opts)) (conj :memory))))
+      (< (:transactions-per-second metrics) (* 0.9 (:rate opts))) (conj :write-rate))))
 
 (defn run-benchmark!
   "Open the subscriptions, write through warmup and the measured period, then verify."
-  [conn state opts pids]
+  [conn state opts]
   (let [descriptors (live/queries (:users opts) (:items opts) (:subscriptions opts))
         tracker (atom {:last-tx-id nil :transactions 0 :catch-up-ms [] :errors []})
         entries (atom [])
         running (atom true)
         probes (atom [])
-        samples (atom [(resources/sample pids)])
-        sampling (atom true)
-        sampler (start-sampler! samples sampling pids)
         skipped (atom 0)
         start (System/nanoTime)
         initialization-ms (atom nil)]
@@ -263,7 +244,6 @@
                                  :tracker tracker
                                  :running running
                                  :probes probes
-                                 :samples samples
                                  :skipped skipped
                                  :opts opts})
       (drain! @entries tracker running)
@@ -271,8 +251,6 @@
       (catch Exception e
         (error! tracker {:error :run-aborted :message (.getMessage e)}))
       (finally
-        (reset! sampling false)
-        (.join sampler 2000)
         ;; After a full drain every probe has finished; after an abort, stopping the
         ;; consumers makes the remaining probes give up.
         (close-subscriptions! @entries running)
@@ -284,8 +262,7 @@
                    :catch-up-ms (percentiles catch-up-ms)
                    :final-catch-up-ms final-catch-up-ms
                    :errors errors}
-          resources (resources/summarize @samples)
-          failures (failed-checks @entries metrics resources opts)]
+          failures (failed-checks @entries metrics opts)]
       (merge metrics
              {:subscriptions (:subscriptions opts)
               :unique-queries (count (set (map :query descriptors)))
@@ -294,21 +271,19 @@
               :initialization-ms @initialization-ms
               :per-query-initialization-ms (percentiles (keep :initialization-ms @entries))
               :final-result-rows (percentiles (map #(reduce + 0 (vals @(:rows %))) @entries))
-              :skipped-operations @skipped
-              :resources resources}))))
+              :skipped-operations @skipped}))))
 
 ;; ---------------------------------------------------------------------------
 ;; Entry point
 
 (defn- print-result [result]
-  (println (format "%4d subscriptions  %.2f tx/s  catch-up p95=%s max=%s ms (%d probes)  final catch-up=%s ms  RSS=%.0f MiB  %s"
+  (println (format "%4d subscriptions  %.2f tx/s  catch-up p95=%s max=%s ms (%d probes)  final catch-up=%s ms  %s"
                    (:subscriptions result)
                    (:transactions-per-second result)
                    (get-in result [:catch-up-ms :p95])
                    (get-in result [:catch-up-ms :max])
                    (get-in result [:catch-up-ms :count])
                    (:final-catch-up-ms result)
-                   (get-in result [:resources :combined-peak-rss-mib])
                    (if (:passed? result) "PASS" "FAIL")))
   (when (seq (:failed-checks result))
     (println "Failed checks:" (:failed-checks result))))
@@ -316,17 +291,13 @@
 (defn run!
   "Load the fixture into a fresh database and run the benchmark once."
   [opts]
-  (let [pids (cond-> {:client (.pid (ProcessHandle/current))}
-               (:server-pid opts) (assoc :server (:server-pid opts))
-               (:storage-pid opts) (assoc :storage (:storage-pid opts)))
-        report {:created-at (str (Instant/now))
+  (let [report {:created-at (str (Instant/now))
                 :options opts
                 :revision (str/trim (:out (shell/sh "git" "rev-parse" "HEAD")))
                 :feldera-revision "1d81c0323e96a0cbc9e50e584babc112e5cfdb16"
-                :environment (some-> (System/getenv "AUCTIONMARK_ENVIRONMENT") (json/read-str :key-fn keyword))
-                :sampled-processes (keys pids)}]
+                :environment (some-> (System/getenv "AUCTIONMARK_ENVIRONMENT") (json/read-str :key-fn keyword))}]
     (with-open [conn (tc/connect (:host opts) (:port opts))]
-      (let [result (run-benchmark! conn (live/load-fixture! conn opts) opts pids)]
+      (let [result (run-benchmark! conn (live/load-fixture! conn opts) opts)]
         (print-result result)
         (merge report result)))))
 
