@@ -1,0 +1,25 @@
+# Triplox server configuration for the live-query benchmark.
+# run-sync.py fills in the placeholders (ports and paths) for each run and writes
+# the result to the run's output directory. Paths are substituted as quoted strings.
+
+[storage]
+type = "remote"
+endpoint = "http://127.0.0.1:${rustfs_port}"
+bucket = "auctionmark"
+access_key = "triplox"
+secret_key = "triplox123"
+cache_path = ${cache_path}
+wal_flush_interval_us = 100
+
+[log]
+type = "file"
+path = ${log_path}
+
+[server]
+host = "127.0.0.1"
+port = ${port}
+
+[incremental]
+threads = 8
+merger_threads = 2
+cache_mib = 4096

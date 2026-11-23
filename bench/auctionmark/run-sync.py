@@ -8,9 +8,11 @@ import os
 from pathlib import Path
 import signal
 import socket
+import string
 import subprocess
 import sys
 import time
+import tomllib
 import uuid
 
 RUSTFS_IMAGE = "rustfs/rustfs:1.0.0"
@@ -53,6 +55,18 @@ def wait_port(port, process=None, timeout=30):
     raise TimeoutError(f"Port {port} did not become ready")
 
 
+def free_ports(count):
+    # Hold all sockets open together so the ports are distinct.
+    sockets = [socket.socket() for _ in range(count)]
+    try:
+        for sock in sockets:
+            sock.bind(("127.0.0.1", 0))
+        return [sock.getsockname()[1] for sock in sockets]
+    finally:
+        for sock in sockets:
+            sock.close()
+
+
 def interrupted(signum, _frame):
     raise InterruptedError(f"Received signal {signum}")
 
@@ -70,12 +84,22 @@ def benchmark(args, benchmark_args):
     server = client = None
     with binary.open("rb") as executable:
         digest = hashlib.file_digest(executable, "sha256").hexdigest()
+    rustfs_port, port = free_ports(2)
+    config_path = directory / "server.toml"
+    config_path.write_text(string.Template((BENCH / "server.toml").read_text()).substitute(
+        rustfs_port=rustfs_port, port=port,
+        cache_path=json.dumps(str(directory / "cache")),
+        log_path=json.dumps(str(directory / "log" / "log"))))
+    config = tomllib.loads(config_path.read_text())
+    storage, incremental = config["storage"], config["incremental"]
     # The server has no memory limit. Its DBSP RSS budget is 75% of host RAM.
     server_rss_mib = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // 4 * 3 // 2**20
     metadata = {
-        "runtime": "pooled", "foreground_threads": 8, "merger_threads": 2,
-        "shared_cache_mib": 4096, "cdc_poll_ms": 200,
-        "remote_flush_us": 100, "storage": "RustFS", "log": "local file",
+        "runtime": "pooled", "foreground_threads": incremental["threads"],
+        "merger_threads": incremental["merger_threads"],
+        "shared_cache_mib": incremental["cache_mib"], "cdc_poll_ms": 200,
+        "remote_flush_us": storage["wal_flush_interval_us"],
+        "storage": "RustFS", "log": "local file",
         "rustfs_image": RUSTFS_IMAGE, "server_binary": str(binary),
         "server_sha256": digest,
         "server_cpu_quota": None, "server_memory_mib": None,
@@ -88,18 +112,19 @@ def benchmark(args, benchmark_args):
     try:
         run("docker", "run", "--detach", "--rm", "--name", name,
             "--cpus=0.25", "--memory=768m", "--memory-swap=768m", "--pids-limit=128",
-            "-p", "127.0.0.1::9000", "-e", "RUSTFS_ACCESS_KEY=triplox",
-            "-e", "RUSTFS_SECRET_KEY=triplox123", RUSTFS_IMAGE, "/data",
+            "-p", f"127.0.0.1:{rustfs_port}:9000",
+            "-e", "RUSTFS_ACCESS_KEY=" + storage["access_key"],
+            "-e", "RUSTFS_SECRET_KEY=" + storage["secret_key"], RUSTFS_IMAGE, "/data",
             stdout=subprocess.DEVNULL)
-        rustfs_port = int(output("docker", "port", name, "9000/tcp").rsplit(":", 1)[1])
         wait_port(rustfs_port)
         # Bucket setup finishes before the measured server and client start.
         for attempt in range(20):
             result = subprocess.run([
                 "docker", "run", "--rm", "--name", rc_name, "--network", "container:" + name,
                 "--cpus=0.25", "--memory=128m", "--memory-swap=128m", "--entrypoint", "/bin/sh",
-                RC_IMAGE, "-c", "rc alias set probe http://127.0.0.1:9000 triplox triplox123 && "
-                "rc mb --ignore-existing probe/auctionmark"],
+                RC_IMAGE, "-c", "rc alias set probe http://127.0.0.1:9000 "
+                f"{storage['access_key']} {storage['secret_key']} && "
+                f"rc mb --ignore-existing probe/{storage['bucket']}"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, timeout=30)
             if result.returncode == 0:
                 break
@@ -107,25 +132,12 @@ def benchmark(args, benchmark_args):
                 raise RuntimeError("RustFS bucket setup failed: " + result.stderr)
             time.sleep(0.25)
         rustfs_pid = output("docker", "inspect", "--format", "{{.State.Pid}}", name)
-        with socket.socket() as sock:
-            sock.bind(("127.0.0.1", 0))
-            port = sock.getsockname()[1]
-        # JSON string quoting is compatible with these TOML basic strings.
-        config = directory / "server.toml"
-        config.write_text(
-            f'[storage]\ntype="remote"\nendpoint="http://127.0.0.1:{rustfs_port}"\n'
-            'bucket="auctionmark"\naccess_key="triplox"\nsecret_key="triplox123"\n'
-            f'cache_path={json.dumps(str(directory / "cache"))}\n'
-            'wal_flush_interval_us=100\n'
-            f'[log]\ntype="file"\npath={json.dumps(str(directory / "log" / "log"))}\n'
-            f'[server]\nhost="127.0.0.1"\nport={port}\n'
-            '[incremental]\nthreads=8\nmerger_threads=2\ncache_mib=4096\n')
         temporary = directory / "tmp"
         temporary.mkdir()
         environment = {**os.environ, "TOKIO_WORKER_THREADS": "2", "TMPDIR": str(temporary),
                        "AUCTIONMARK_ENVIRONMENT": json.dumps(metadata)}
         with (directory / "server.log").open("w") as log:
-            server = subprocess.Popen([str(binary), str(config)], stdout=log, stderr=log,
+            server = subprocess.Popen([str(binary), str(config_path)], stdout=log, stderr=log,
                                       env=environment, start_new_session=True)
             wait_port(port, server)
             command = ["systemd-run", "--user", "--scope", "--quiet",

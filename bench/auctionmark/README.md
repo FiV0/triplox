@@ -94,10 +94,34 @@ python3 bench/auctionmark/run-sync.py
 `CARGO_TARGET_DIR` or `--server-binary /path/to/triplox` selects an existing release
 binary. The launcher records its SHA-256 and checkout revision; rebuild after Rust
 changes. It creates a fresh RustFS container and local transaction log, starts the
-server, runs the Clojure driver, and tears down the processes and container. Logs,
+server, runs the Clojure driver, and tears down the processes and container. The
+server configuration is [`server.toml`](server.toml); the launcher fills in its ports
+and paths and writes the result to the output directory. Logs,
 configuration, JSON results, and local database files remain in
 `target/auctionmark-sync/<timestamp>/`. `--output-dir` must name a new directory.
 The default client timeout is 600 seconds, configurable with `--timeout`.
+
+Launcher options come first; arguments after `--` go to the Clojure driver.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--server-binary PATH` | `$CARGO_TARGET_DIR/release/triplox` | Triplox release binary |
+| `--output-dir DIR` | `target/auctionmark-sync/<timestamp>` | New directory for artifacts |
+| `--timeout SECONDS` | 600 | Client timeout |
+| `-- --users N` | 200 | Fixture users |
+| `-- --items N` | 1000 | Fixture items |
+| `-- --subscriptions N` | 1000 | Live queries, five per user |
+| `-- --seed N` | 42 | Workload seed |
+| `-- --rate N` | 5 | Target committed transactions/second |
+| `-- --warmup SECONDS` | 10 | Writes before measurement |
+| `-- --duration SECONDS` | 30 | Measured writes |
+| `-- --sla-ms MS` | 250 | Maximum p95 catch-up time |
+| `-- --probe-ms MS` | 500 | Interval between catch-up probes |
+| `-- --probe-timeout-ms MS` | 5000 | Maximum wait for a probe |
+| `-- --drain-ms MS` | 30000 | Maximum final catch-up wait |
+
+The launcher sets `--host`, `--port`, `--server-pid`, `--storage-pid`, `--memory-mib`,
+and `--output` itself and overrides any values passed after `--`.
 
 Triplox runs as a plain process with **no memory or CPU limit** from the launcher. The
 JVM client has its own systemd scope with a two-core quota and 2 GiB memory limit; its
@@ -119,7 +143,7 @@ The server uses eight pooled DBSP foreground workers, two merger workers, and a
 on total circuit state. The runtime comes from the `runtime-pooling` branch of
 [FiV0/feldera](https://github.com/FiV0/feldera/tree/runtime-pooling), pinned at
 `1d81c0323e96a0cbc9e50e584babc112e5cfdb16`. All incremental queries share this pool;
-the benchmark sizes it explicitly:
+the benchmark sizes it explicitly in [`server.toml`](server.toml):
 
 ```toml
 [incremental]
