@@ -73,137 +73,29 @@ comparison or a full AuctionMark implementation.
 
 ### Build and run
 
-Requirements: Linux with a systemd user session, Docker, Python 3.11+, Java 21,
-Clojure CLI, and Rust. Run these commands from the repository root. Builds use at
-most two CPU cores and 8 GiB; do not run them alongside the benchmark.
+From the repository root:
 
 ```bash
-systemd-run --user --scope --quiet -p CPUQuota=200% -p MemoryMax=8G \
-  nice -n 10 cargo build --release --locked -j1 --bin triplox
-
-(cd triplox-jvm && systemd-run --user --scope --quiet \
-  -p CPUQuota=200% -p MemoryMax=2G \
-  ./gradlew --no-daemon --max-workers=1 -Dorg.gradle.jvmargs=-Xmx768m \
-  test publishMavenPublicationToMavenLocal \
-  -PtriploxVersion=0.1.0-incremental-auctionmark-SNAPSHOT \
-  -PsignAllPublications=false)
-
+cargo build --release --bin triplox
+(cd triplox-jvm && ./gradlew publishMavenPublicationToMavenLocal \
+  -PtriploxVersion=0.1.0-incremental-auctionmark-SNAPSHOT -PsignAllPublications=false)
 python3 bench/auctionmark/run-sync.py
 ```
 
-`CARGO_TARGET_DIR` or `--server-binary /path/to/triplox` selects an existing release
-binary. The launcher records its SHA-256 and checkout revision; rebuild after Rust
-changes. It creates a fresh RustFS container and local transaction log, starts the
-server, runs the Clojure driver, and tears down the processes and container. The
-server configuration is [`server.toml`](server.toml); the launcher fills in its ports
-and paths and writes the result to the output directory. Logs,
-configuration, JSON results, and local database files remain in
-`target/auctionmark-sync/<timestamp>/`. `--output-dir` must name a new directory.
-The default client timeout is 600 seconds, configurable with `--timeout`.
-
-Launcher options come first; arguments after `--` go to the Clojure driver.
-
-| Option | Default | Meaning |
-|---|---|---|
-| `--server-binary PATH` | `$CARGO_TARGET_DIR/release/triplox` | Triplox release binary |
-| `--output-dir DIR` | `target/auctionmark-sync/<timestamp>` | New directory for artifacts |
-| `--timeout SECONDS` | 600 | Client timeout |
-| `-- --users N` | 200 | Fixture users |
-| `-- --items N` | 1000 | Fixture items |
-| `-- --subscriptions N` | 1000 | Live queries, five per user |
-| `-- --seed N` | 42 | Workload seed |
-| `-- --rate N` | 5 | Target committed transactions/second |
-| `-- --warmup SECONDS` | 10 | Writes before measurement |
-| `-- --duration SECONDS` | 300 | Measured writes |
-| `-- --probe-ms MS` | 500 | Interval between catch-up probes |
-
-The launcher sets `--host`, `--port` and `--output` itself and overrides any values
-passed after `--`.
-
-Triplox runs as a plain process with **no memory or CPU limit** from the launcher. The
-JVM client has its own systemd scope with a two-core quota and 2 GiB memory limit; its
-heap remains capped at 768 MiB. RustFS has a separate 0.25-core quota and 768 MiB memory
-limit. The launcher's combined memory threshold is 75% of host RAM plus 2 GiB for
-the client and 768 MiB for RustFS. Swapping is disabled in the client scope and the
-RustFS container. Bucket creation uses a small short-lived `rc` container before the
-server starts. The launcher requires the client scope to succeed. The direct Clojure
-command neither measures resources nor installs these operating-system limits.
-
-DBSP's process RSS pressure threshold is 75% of the smaller of host RAM and the
-cgroup memory limit reported by sysinfo. With no limit on the
-server, it is 75% of host RAM. This is a soft pressure threshold for the whole Triplox
-process; nothing enforces a hard limit. The server log records the detected threshold
-as `DBSP process RSS budget` in bytes.
-
-The server uses eight pooled DBSP foreground workers, two merger workers, and a
-**4 GiB shared cache**. This is a cache capacity, not preallocated memory or a cap
-on total circuit state. The runtime comes from the `runtime-pooling` branch of
-[FiV0/feldera](https://github.com/FiV0/feldera/tree/runtime-pooling), pinned at
-`1d81c0323e96a0cbc9e50e584babc112e5cfdb16`. All incremental queries share this pool;
-the benchmark sizes it explicitly in [`server.toml`](server.toml):
-
-```toml
-[incremental]
-threads = 8
-merger_threads = 2
-cache_mib = 4096
-```
+The launcher starts RustFS and a Triplox server with [`server.toml`](server.toml),
+runs the driver and writes results to `target/auctionmark-sync/<timestamp>/`.
+Arguments after `--` go to the Clojure driver.
 
 ### Workload
 
-The default fixture has 200 users and 1,000 items, generated from seed 42 using the
-AuctionMark branch's schema, generators, and write procedures. Initial views are
-populated with bids, watches, and unanswered questions. The fixture needs a fresh
-database. Wall-clock timestamps and random entity UUIDs are not byte-for-byte
-reproducible.
-
-| Query | Parameter | Result |
-|---|---|---|
-| Item detail | Item ID | Name, description, price, bid count, status |
-| Watchlist | User ID | Watched items and current prices/statuses |
-| Seller listings | Seller ID | Open items, prices, bid counts |
-| Buyer bids | Buyer ID | Bids on currently open items |
-| Seller questions | Seller ID | Unanswered item questions |
-
-Each group of five subscriptions belongs to another user. Item-detail views use a
-separate item per user. These are distinct, selective queries, with constants
-embedded in Datalog because incremental query arguments are not supported by the
-server. Results preserve row multiplicities; duplicate watch rows are meaningful.
-Views are unpaginated, so fixture size and result sizes must accompany any claim.
-
-Operation choices are 50% bids, 15% new listings, 15% watch changes, 10% questions
-or answers, and 10% auction status transitions. This is an operation mix: the
-existing new-item procedure writes twice, and some procedures can do nothing.
-The rate limiter acts on **actual submitted transactions**, including both writes
-of a multi-transaction procedure. It adds seeded 10% pacing jitter to avoid aligning
-all writes with the CDC polling period. It does not generate catch-up bursts.
-
-A run opens `--subscriptions` live queries (default 1,000, five for each of the 200
-users), then writes at five committed transactions/second: 10 seconds of warmup
-(`--warmup`), then 300 seconds of measurement (`--duration`). With the defaults, every
-user has live queries, so most writes change at least one subscription. The run passes only if it has:
-
-- at least one catch-up probe (see below);
-- at least 90% of the requested transaction rate;
-- correct primed and final results, and no failed subscriptions;
-- combined peak memory within the launcher's threshold (launcher runs only).
-
-A run with no probes cannot pass. Probes and the final catch-up have no timeout: however
-late the subscriptions are, the driver waits for them and records the time, and only
-the launcher's `--timeout` bounds the whole run. A failed run exits nonzero and retains its report. A
-passing run establishes only the tested count for this fixture and machine, not a
-maximum capacity. Subscriptions need at least subscriptions/5 users and at least as
-many items as users:
-
-```bash
-python3 bench/auctionmark/run-sync.py --timeout 600 -- \
-  --users 400 --items 2000 --subscriptions 2000 \
-  --rate 5 --warmup 10 --duration 300
-```
-
-For a short functional check, use `--users 20 --items 100 --subscriptions 100
---warmup 1 --duration 3`; such a small sample is not a freshness or capacity
-conclusion.
+The driver loads a fixture (default 200 users, 1,000 items, seed 42) into a fresh
+database and opens five live queries per user: item detail, watchlist, seller
+listings, buyer bids and seller questions. It then writes AuctionMark transactions
+at `--rate` (default 5/s) for `--warmup` + `--duration` seconds. The run fails if
+results diverge from ordinary queries, a subscription fails, the achieved rate is
+below 90% or no probe was taken. The queries and operation mix are in
+[`live.clj`](src/auctionmark/live.clj), the driver is
+[`sync.clj`](src/auctionmark/sync.clj), and `--help` lists the options.
 
 ### Scaling
 
@@ -308,7 +200,7 @@ AuctionMark procedures. A driver test runs a short benchmark and checks its prob
 Use a pooled dev server and the locally published JVM artifact:
 
 ```bash
-# In a separate terminal, add the incremental section above to a dev config:
+# In a separate terminal, add the [incremental] section of server.toml to a dev config:
 cargo run -- config/triplox-dev.toml
 # Then:
 (cd bench/auctionmark && clojure -X:test)
