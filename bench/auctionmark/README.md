@@ -294,9 +294,10 @@ circuit execution and client consumption. The 200 ms setting is CDC polling, not
 a 200 ms write interval.
 
 Memory/local storage use SlateDB's default 100 ms flush interval. Remote storage
-defaults to 200 ms; this RustFS demo explicitly sets `wal_flush_interval_us=100`
-to preserve its **100 microsecond** flush interval. Actual writes take additional
-time. `src/incremental/cdc.rs` keeps its 200 ms polling interval, so polling phase
+defaults to 200 ms. This RustFS demo sets `wal_flush_interval_us=500000`, a 500 ms
+flush interval. A short interval writes one small WAL object per transaction. The
+throttled RustFS container cannot list that many objects, and requests time out
+after about 20 minutes. Actual writes take additional time. `src/incremental/cdc.rs` keeps its 200 ms polling interval, so polling phase
 and object-store latency are material parts of the measured catch-up time.
 
 ### Validation

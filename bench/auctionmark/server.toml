@@ -9,7 +9,7 @@ bucket = "auctionmark"
 access_key = "triplox"
 secret_key = "triplox123"
 cache_path = ${cache_path}
-wal_flush_interval_us = 100
+wal_flush_interval_us = 500000
 
 [log]
 type = "file"
