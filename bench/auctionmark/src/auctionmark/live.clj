@@ -158,10 +158,9 @@
     (throw (ex-info "Use a fresh database for the live benchmark" {})))
   (transact! conn schema/schema-tx)
   (let [state (proc/make-state)
-        rng (Random. seed)
-        categories (mapv #(hash-map :name (str "Category-" %) :weight 1) (range 10))]
+        rng (Random. seed)]
     (proc/generate-regions! conn state rng 1)
-    (proc/generate-categories! conn state categories)
+    (proc/generate-categories! conn state (proc/load-categories-tsv))
     (proc/generate-users! conn state rng users)
     (proc/generate-items! conn state rng items)
     (open-all-items! conn state users items)
