@@ -5767,7 +5767,7 @@ dependencies = [
 
 [[package]]
 name = "triplox"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 dependencies = [
  "anyhow",
  "aws-sdk-s3",
@@ -5813,7 +5813,7 @@ dependencies = [
 
 [[package]]
 name = "triplox-client"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 dependencies = [
  "anyhow",
  "bincode",
@@ -5833,7 +5833,7 @@ dependencies = [
 
 [[package]]
 name = "triplox-edn"
-version = "0.1.0-alpha.8"
+version = "0.1.0-alpha.9"
 dependencies = [
  "chrono",
  "itertools 0.15.0",
