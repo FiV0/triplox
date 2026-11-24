@@ -114,7 +114,7 @@ Launcher options come first; arguments after `--` go to the Clojure driver.
 | `-- --seed N` | 42 | Workload seed |
 | `-- --rate N` | 5 | Target committed transactions/second |
 | `-- --warmup SECONDS` | 10 | Writes before measurement |
-| `-- --duration SECONDS` | 30 | Measured writes |
+| `-- --duration SECONDS` | 300 | Measured writes |
 | `-- --probe-ms MS` | 500 | Interval between catch-up probes |
 
 The launcher sets `--host`, `--port` and `--output` itself and overrides any values
@@ -180,7 +180,7 @@ all writes with the CDC polling period. It does not generate catch-up bursts.
 
 A run opens `--subscriptions` live queries (default 1,000, five for each of the 200
 users), then writes at five committed transactions/second: 10 seconds of warmup
-(`--warmup`), then 30 seconds of measurement (`--duration`). With the defaults, every
+(`--warmup`), then 300 seconds of measurement (`--duration`). With the defaults, every
 user has live queries, so most writes change at least one subscription. The run passes only if it has:
 
 - at least one catch-up probe (see below);
@@ -198,7 +198,7 @@ many items as users:
 ```bash
 python3 bench/auctionmark/run-sync.py --timeout 600 -- \
   --users 400 --items 2000 --subscriptions 2000 \
-  --rate 5 --warmup 10 --duration 30
+  --rate 5 --warmup 10 --duration 300
 ```
 
 For a short functional check, use `--users 20 --items 100 --subscriptions 100
@@ -282,7 +282,7 @@ initialization and final verification, not just the measurement window.
 The combined peak is the largest summed server and client RSS of one sample, plus the
 RustFS peak. If it exceeds the threshold, the launcher marks the report as failed with
 a `memory` check and exits nonzero. The check runs after the client exits, so it does
-not stop a run early. Process RSS is not the cgroup accounting that limits enforce. A 30 second measurement has about 60 probes; inspect the count
+not stop a run early. Process RSS is not the cgroup accounting that limits enforce. A 300 second measurement has about 500 probes; inspect the count
 before reading the tail percentiles.
 
 ### WAL flush versus CDC polling

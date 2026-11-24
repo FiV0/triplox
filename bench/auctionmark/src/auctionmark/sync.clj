@@ -24,7 +24,7 @@
    [nil "--seed N" "Workload seed" :default 42 :parse-fn parse-long]
    [nil "--rate N" "Target committed transactions/second" :default 5.0 :parse-fn parse-double]
    [nil "--warmup SECONDS" "Writes before measurement" :default 10.0 :parse-fn parse-double]
-   [nil "--duration SECONDS" "Measured writes" :default 30.0 :parse-fn parse-double]
+   [nil "--duration SECONDS" "Measured writes" :default 300.0 :parse-fn parse-double]
    [nil "--probe-ms MS" "Interval between catch-up probes" :default 500 :parse-fn parse-long]
    [nil "--output PATH" "JSON report" :default "sync-report.json"]
    ["-h" "--help"]])
