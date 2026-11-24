@@ -166,6 +166,7 @@
     (proc/generate-items! conn state rng items)
     (open-all-items! conn state users items)
     (let [activity (activity-docs state users items)
+          ;; activity-docs adds one bid to each item 0..users-1, so bump the denormalized counter to match
           bid-counts (mapv (fn [u] {:db/id [:item/id u] :item/num-bids 1}) (range users))]
       (transact! conn (into activity bid-counts))
       state)))
