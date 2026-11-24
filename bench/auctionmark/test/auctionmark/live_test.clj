@@ -72,11 +72,11 @@
           writes (atom 0)
           last-tx-id (atom 0)
           working-state (assoc state
-                               :transact (fn [c tx]
-                                           (let [result (live/transact! c tx)]
-                                             (reset! last-tx-id (:tx-id result))
-                                             (swap! writes inc)
-                                             result)))
+                               :transact-fn (fn [c tx]
+                                              (let [result (live/transact! c tx)]
+                                                (reset! last-tx-id (:tx-id result))
+                                                (swap! writes inc)
+                                                result)))
           subs (mapv #(assoc % :sub (tc/subscribe conn (:query %)) :rows (atom {}))
                      (live/queries 2 4 10))
           rng (Random. 17)]

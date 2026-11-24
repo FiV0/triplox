@@ -170,12 +170,12 @@
         measured-start (+ begin (long (* 1e9 (:warmup opts))))
         end (+ measured-start (long (* 1e9 (:duration opts))))
         rng (Random. (:seed opts))
-        state (assoc state :transact (tracked-transactor (assoc ctx
-                                                                :measured-start measured-start
-                                                                :end end
-                                                                :next-due (atom begin)
-                                                                :next-probe (atom measured-start)
-                                                                :pacing-rng (Random. (inc (:seed opts))))))]
+        state (assoc state :transact-fn (tracked-transactor (assoc ctx
+                                                                   :measured-start measured-start
+                                                                   :end end
+                                                                   :next-due (atom begin)
+                                                                   :next-probe (atom measured-start)
+                                                                   :pacing-rng (Random. (inc (:seed opts))))))]
     (while (< (System/nanoTime) end)
       (let [before (:last-tx-id @tracker)]
         (live/mutate! conn rng state)

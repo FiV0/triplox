@@ -59,7 +59,7 @@
   "Create shared benchmark state. Thread-safe."
   []
   {;; procedures write through this; the live benchmark replaces it to observe each write
-   :transact         tc/transact
+   :transact-fn      tc/transact
    :user-counter     (AtomicLong. 0)
    :region-counter   (AtomicLong. 0)
    :category-counter (AtomicLong. 0)
@@ -91,7 +91,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defn transact! [conn state tx]
-  ((:transact state) conn tx))
+  ((:transact-fn state) conn tx))
 
 (defn next-id [^AtomicLong counter]
   (.getAndIncrement counter))
