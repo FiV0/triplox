@@ -27,9 +27,10 @@ def process_images(content, obsidian_path, assets_dir):
     """
     Find Obsidian wikilink images, copy them into public/assets/, and rewrite
     the references to standard markdown linking at /assets/<name>.
+    A size option (![[x.png|1200]]) is dropped; a text option becomes the alt text.
     """
-    image_pattern = r'!\[\[([^\]]+\.(?:png|jpg|jpeg|gif|svg|webp))\]\]'
-    matches = re.findall(image_pattern, content, re.IGNORECASE)
+    image_pattern = r'!\[\[([^\]|]+\.(?:png|jpg|jpeg|gif|svg|webp))(?:\|([^\]]*))?\]\]'
+    matches = [m[0] for m in re.findall(image_pattern, content, re.IGNORECASE)]
 
     source_images_dir = obsidian_path.parent / 'images'
     copied_images = []
@@ -46,7 +47,9 @@ def process_images(content, obsidian_path, assets_dir):
 
     def replace_image(match):
         image_name = match.group(1)
-        alt_text = Path(image_name).stem
+        option = (match.group(2) or '').strip()
+        is_size = re.fullmatch(r'\d+(?:x\d+)?', option)
+        alt_text = option if option and not is_size else Path(image_name).stem
         return f'![{alt_text}](/assets/{image_name})'
 
     content = re.sub(image_pattern, replace_image, content, flags=re.IGNORECASE)
@@ -203,6 +206,14 @@ def transform_display_math(content):
     return content
 
 
+def expand_code_tabs(content, tab_size=4):
+    """Expand tabs in fenced code blocks to Obsidian's default width; browsers use 8."""
+    def expand(match):
+        return match.group(0).expandtabs(tab_size)
+
+    return re.sub(r'```[^\n]*\n.*?```', expand, content, flags=re.DOTALL)
+
+
 def yaml_escape(value):
     """Quote a YAML scalar if it contains characters that would otherwise need escaping."""
     if re.search(r'[:#\-\[\]\{\}&*!|>\'\"%@`,]', value) or value != value.strip():
@@ -243,6 +254,7 @@ def create_blog_post(obsidian_file_path, custom_date=None, author_name=None, aut
     content = transform_wikilinks(content, posts_dir, docs_dir)
     content = transform_urls(content)
     content = transform_display_math(content)
+    content = expand_code_tabs(content)
 
     name = author_name or 'Finn Völkel'
 
