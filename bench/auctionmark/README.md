@@ -318,3 +318,21 @@ The runtime has tests for pooled worker sharing, independent subscription
 retirement, and error propagation. Ordinary query errors retire their subscription;
 a panic in a shared pool can affect other subscriptions in that pool. This demo
 reports failures rather than treating a restarted subscription as uninterrupted.
+
+### Flush interval pressure
+
+A short flush interval makes results fresher. SlateDB writes buffered WAL data to RustFS sooner, so the server sees each transaction sooner. The cost is more and smaller WAL objects, and that puts pressure on two places.
+
+RustFS pressure: each flush writes one WAL object. The server finds new WAL data by listing the `triplox/wal/` prefix. RustFS reads the metadata of every live object for each listing, so a listing gets slower as the WAL grows. SlateDB deletes old WAL objects only after it flushes data to level 0. A 30 minute run held 1,500 to 4,000 live WAL objects. With a 100 microsecond interval and the 0.25-core RustFS quota, listings took more than 5 seconds. Then they timed out with HTTP 500, and the server stopped making progress.
+
+Inbox pressure: every query has an inbox of 256 batches (`inbox_capacity` in `src/incremental.rs`). The server sends each WAL batch to the inbox of every query. A query that falls 256 batches behind ends with `Incremental query fell behind`. A shorter interval makes more batches each second, so the inbox fills sooner. At about 5 batches a second, 256 batches is about 51 seconds of lag. At about 2 batches a second, it is about 128 seconds.
+
+These runs used 1,000 subscriptions, 5 transactions a second, 30 minutes of writes and 2 merger threads:
+
+| Flush interval | RustFS cores | Result | Catch-up p50 | Catch-up p95 |
+|---|---|---|---|---|
+| 100 microseconds | 0.25 | Failed, 801 queries fell behind | 3.4 s | 12.9 s |
+| 500 ms | 0.25 | Passed | 2.3 s | 4.9 s |
+| 100 ms | 2 | Passed | 0.8 s | 1.4 s |
+
+Do not make the flush interval small without checking RustFS first. During a run, look at the RustFS CPU in `containers.jsonl` and at `retry.rs` lines in `server.log`. If RustFS sits at its CPU quota, raise the quota or the flush interval. These numbers come from one 8-core machine.
