@@ -15,12 +15,14 @@
   "The first delta, also for an empty result, matches a standard query at the registration tx-key."
   [conn {:keys [sub rows query] :as s}]
   (apply-next-delta! s)
-  (is (= (frequencies (tc/q (tc/db conn (tc/registration-tx-key sub)) query)) @rows)))
+  (is (= (frequencies (tc/q (tc/db conn (tc/registration-tx-key sub)) query))
+         @rows)))
 
 (defn- assert-current
   "The subscription's rows match a standard query at the tx-key it has reached."
   [conn {:keys [sub rows query]}]
-  (is (= (frequencies (tc/q (tc/db conn (tc/tx-key sub)) query)) @rows)))
+  (is (= (frequencies (tc/q (tc/db conn (tc/tx-key sub)) query))
+         @rows)))
 
 (defn- catch-up!
   "Apply deltas until the subscription reaches tx-id. One delta covers a whole WAL
