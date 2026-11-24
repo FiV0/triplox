@@ -103,6 +103,7 @@
 
 (def ^:private open-auction-ms (.toMillis TimeUnit/DAYS 30))
 
+;; Generated items have random statuses and skewed sellers; opening all with round-robin sellers keeps every live view non-empty.
 (defn- open-all-items!
   "Give every item a round-robin seller and a future end date and open it, mirroring that in the procedure pools."
   [conn state users items]
