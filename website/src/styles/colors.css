@@ -1,4 +1,6 @@
 :root {
+  /* Newer Geist build; the theme's Geist Sans draws a raised `s` in Firefox on Linux. */
+  --sl-font: 'Geist Variable', sans-serif;
   --color-grey: #f6f5f6;
   --color-orange: #f68e2c;
   --color-blue: #faf8f9;

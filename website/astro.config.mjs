@@ -35,7 +35,11 @@ export default defineConfig({
         dark: './src/assets/logo_dark.svg',
         replacesTitle: false,
       },
-      customCss: ['./src/styles/colors.css', 'katex/dist/katex.min.css'],
+      customCss: [
+        '@fontsource-variable/geist',
+        './src/styles/colors.css',
+        'katex/dist/katex.min.css',
+      ],
       components: {
         Sidebar: './src/components/Sidebar.astro',
         PageTitle: './src/components/PageTitle.astro',
