@@ -163,7 +163,7 @@
     (proc/generate-regions! conn state rng 1)
     (proc/generate-categories! conn state categories)
     (proc/generate-users! conn state rng users)
-    (tc/db conn (proc/generate-items! conn state rng items))
+    (proc/generate-items! conn state rng items)
     (open-all-items! conn state users items)
     (let [activity (activity-docs state users items)
           bid-counts (mapv (fn [u] {:db/id [:item/id u] :item/num-bids 1}) (range users))]
