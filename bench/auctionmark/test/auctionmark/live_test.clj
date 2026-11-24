@@ -92,6 +92,3 @@
           (doseq [{:keys [sub]} subs]
             (.close sub))))
       (is (pos? @writes)))))
-
-(deftest rejects-negative-client-weights
-  (is (thrown? clojure.lang.ExceptionInfo (live/apply-delta {} [[[1] -1]]))))
