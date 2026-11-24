@@ -58,7 +58,9 @@
 (defn make-state
   "Create shared benchmark state. Thread-safe."
   []
-  {:user-counter     (AtomicLong. 0)
+  {;; procedures write through this; the live benchmark replaces it to observe each write
+   :transact-fn      tc/transact
+   :user-counter     (AtomicLong. 0)
    :region-counter   (AtomicLong. 0)
    :category-counter (AtomicLong. 0)
    :gag-counter      (AtomicLong. 0)
@@ -87,6 +89,9 @@
 ;; ---------------------------------------------------------------------------
 ;; Helpers
 ;; ---------------------------------------------------------------------------
+
+(defn transact! [conn state tx]
+  ((:transact-fn state) conn tx))
 
 (defn next-id [^AtomicLong counter]
   (.getAndIncrement counter))
@@ -327,7 +332,7 @@
   (let [num-users (long (* scale-factor 1000000))
         num-user-attrs (long (* scale-factor 1300000))
         num-items (long (* scale-factor 10000000))]
-    [[:schema (fn [conn _ _] (tc/transact conn schema/schema-tx))]
+    [[:schema (fn [conn state _] (transact! conn state schema/schema-tx))]
      [:categories (fn [conn state _] (generate-categories! conn state (load-categories-tsv)))]
      [:regions (fn [conn state rng] (generate-regions! conn state rng 75))]
      [:gags (fn [conn state rng] (generate-gags! conn state rng 100))]
@@ -337,9 +342,9 @@
      [:items (fn [conn state rng] (generate-items! conn state rng num-items))]
      [:user-watches generate-user-watches!]
      ;; generators use submit-tx; a synchronous write waits until all of them are indexed
-     [:await-indexing (fn [conn _ _]
-                        (tc/transact conn [[:db/add [:region/id 0] :region/name
-                                            (str "Region-0-fence-" (System/currentTimeMillis))]]))]]))
+     [:await-indexing (fn [conn state _]
+                        (transact! conn state [[:db/add [:region/id 0] :region/name
+                                                (str "Region-0-fence-" (System/currentTimeMillis))]]))]]))
 
 (defn log-item-counts [state]
   (log/info "Load complete. Items: open="
@@ -440,26 +445,26 @@
               bid-id (next-id (:bid-counter state))
               bid-tempid (str "bid-" bid-id)
               now (now-instant)]
-          (tc/transact conn
-                       [{:db/id bid-tempid
-                         :item-bid/id bid-id
-                         :item-bid/item-id [:item/id item-id]
-                         :item-bid/user-id [:user/id (:seller-id item)]
-                         :item-bid/buyer-id [:user/id buyer-id]
-                         :item-bid/bid new-price
-                         :item-bid/max-bid new-price
-                         :item-bid/created-at now
-                         :item-bid/updated now}
-                        {:db/id [:item/id item-id]
-                         :item/current-price new-price
-                         :item/num-bids (inc (long num-bids))}
+          (transact! conn state
+                     [{:db/id bid-tempid
+                       :item-bid/id bid-id
+                       :item-bid/item-id [:item/id item-id]
+                       :item-bid/user-id [:user/id (:seller-id item)]
+                       :item-bid/buyer-id [:user/id buyer-id]
+                       :item-bid/bid new-price
+                       :item-bid/max-bid new-price
+                       :item-bid/created-at now
+                       :item-bid/updated now}
+                      {:db/id [:item/id item-id]
+                       :item/current-price new-price
+                       :item/num-bids (inc (long num-bids))}
                         ;; upserts the item's single max-bid record
-                        (cond-> {:item-max-bid/item-id [:item/id item-id]
-                                 :item-max-bid/user-id [:user/id (:seller-id item)]
-                                 :item-max-bid/bid-id bid-tempid
-                                 :item-max-bid/buyer-id [:user/id buyer-id]
-                                 :item-max-bid/updated now}
-                          (zero? (long num-bids)) (assoc :item-max-bid/created now))]))))))
+                      (cond-> {:item-max-bid/item-id [:item/id item-id]
+                               :item-max-bid/user-id [:user/id (:seller-id item)]
+                               :item-max-bid/bid-id bid-tempid
+                               :item-max-bid/buyer-id [:user/id buyer-id]
+                               :item-max-bid/updated now}
+                        (zero? (long num-bids)) (assoc :item-max-bid/created now))]))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 3: new-item (10%)
@@ -496,7 +501,7 @@
                   :item/start-date now
                   :item/end-date (millis->instant end-ms)
                   :item/status :open}]
-    (tc/transact conn (into [item-doc] image-docs))
+    (transact! conn state (into [item-doc] image-docs))
     ;; apply seller fee — read current balance then decrement
     (let [balance (or (ffirst (tc/q (tc/db conn)
                                     '{:find [?b]
@@ -505,9 +510,9 @@
                                               [?e :user/balance ?b]]}
                                     seller-id))
                       0.0)]
-      (tc/transact conn
-                   [{:db/id [:user/id seller-id]
-                     :user/balance (- (double balance) 1.0)}]))
+      (transact! conn state
+                 [{:db/id [:user/id seller-id]
+                   :user/balance (- (double balance) 1.0)}]))
     (pool-add! (:items-open state) (->ItemSample item-id seller-id end-ms))))
 
 ;; ---------------------------------------------------------------------------
@@ -536,20 +541,20 @@
   [conn ^Random rng state]
   (let [uid (next-id (:user-counter state))
         region-ids @(:regions state)]
-    (tc/transact conn
-                 [{:user/id uid
-                   :user/region-id [:region/id (random/uniform-nth rng region-ids)]
-                   :user/rating 0
-                   :user/balance 0.0
-                   :user/created (now-instant)
-                   :user/sattr0 (random/next-string rng 16)
-                   :user/sattr1 (random/next-string rng 16)
-                   :user/sattr2 (random/next-string rng 16)
-                   :user/sattr3 (random/next-string rng 16)
-                   :user/sattr4 (random/next-string rng 16)
-                   :user/sattr5 (random/next-string rng 16)
-                   :user/sattr6 (random/next-string rng 16)
-                   :user/sattr7 (random/next-string rng 16)}])
+    (transact! conn state
+               [{:user/id uid
+                 :user/region-id [:region/id (random/uniform-nth rng region-ids)]
+                 :user/rating 0
+                 :user/balance 0.0
+                 :user/created (now-instant)
+                 :user/sattr0 (random/next-string rng 16)
+                 :user/sattr1 (random/next-string rng 16)
+                 :user/sattr2 (random/next-string rng 16)
+                 :user/sattr3 (random/next-string rng 16)
+                 :user/sattr4 (random/next-string rng 16)
+                 :user/sattr5 (random/next-string rng 16)
+                 :user/sattr6 (random/next-string rng 16)
+                 :user/sattr7 (random/next-string rng 16)}])
     (swap! (:users state) conj uid)))
 
 ;; ---------------------------------------------------------------------------
@@ -581,14 +586,14 @@
   [conn ^Random rng state]
   (when-let [item (pick-random-closed rng state)]
     (let [buyer-id (pick-random-user rng state)]
-      (tc/transact conn
-        [{:item-feedback/id (next-id (:feedback-counter state))
-          :item-feedback/item-id [:item/id (:item-id item)]
-          :item-feedback/user-id [:user/id (:seller-id item)]
-          :item-feedback/buyer-id [:user/id buyer-id]
-          :item-feedback/rating (+ 1 (.nextInt rng 5))
-          :item-feedback/comment (str "Feedback " (.nextInt rng 10000))
-          :item-feedback/date (now-instant)}]))))
+      (transact! conn state
+                 [{:item-feedback/id (next-id (:feedback-counter state))
+                   :item-feedback/item-id [:item/id (:item-id item)]
+                   :item-feedback/user-id [:user/id (:seller-id item)]
+                   :item-feedback/buyer-id [:user/id buyer-id]
+                   :item-feedback/rating (+ 1 (.nextInt rng 5))
+                   :item-feedback/comment (str "Feedback " (.nextInt rng 10000))
+                   :item-feedback/date (now-instant)}]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 8: new-purchase (2%)
@@ -610,16 +615,16 @@
                        :limit 1}
                      item-id)
           winning-bid-id (ffirst bids)]
-      (tc/transact conn
-                   [(merge
-                     {:item-purchase/id (next-id (:purchase-counter state))
-                      :item-purchase/item-id [:item/id item-id]
-                      :item-purchase/user-id [:user/id (:seller-id item)]
-                      :item-purchase/date (now-instant)}
-                     (when winning-bid-id
-                       {:item-purchase/bid-id [:item-bid/id winning-bid-id]}))
-                    {:db/id [:item/id item-id]
-                     :item/status :closed}])
+      (transact! conn state
+                 [(merge
+                   {:item-purchase/id (next-id (:purchase-counter state))
+                    :item-purchase/item-id [:item/id item-id]
+                    :item-purchase/user-id [:user/id (:seller-id item)]
+                    :item-purchase/date (now-instant)}
+                   (when winning-bid-id
+                     {:item-purchase/bid-id [:item-bid/id winning-bid-id]}))
+                  {:db/id [:item/id item-id]
+                   :item/status :closed}])
       (pool-add! (:items-closed state) item))))
 
 ;; ---------------------------------------------------------------------------
@@ -631,15 +636,15 @@
   [conn ^Random rng state]
   (when-let [item (pick-random-open rng state)]
     (let [buyer-id (pick-random-user rng state)]
-      (tc/transact conn
-                   [{:item-comment/id (next-id (:comment-counter state))
-                     :item-comment/item-id [:item/id (:item-id item)]
-                     :item-comment/user-id [:user/id (:seller-id item)]
-                     :item-comment/buyer-id [:user/id buyer-id]
-                     :item-comment/question (str "Question about item " (:item-id item))
-                     :item-comment/response ""
-                     :item-comment/created (now-instant)
-                     :item-comment/updated (now-instant)}]))))
+      (transact! conn state
+                 [{:item-comment/id (next-id (:comment-counter state))
+                   :item-comment/item-id [:item/id (:item-id item)]
+                   :item-comment/user-id [:user/id (:seller-id item)]
+                   :item-comment/buyer-id [:user/id buyer-id]
+                   :item-comment/question (str "Question about item " (:item-id item))
+                   :item-comment/response ""
+                   :item-comment/created (now-instant)
+                   :item-comment/updated (now-instant)}]))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 10: update-item (2%)
@@ -649,9 +654,9 @@
   "Update item description."
   [conn ^Random rng state]
   (when-let [item (pick-random-open rng state)]
-    (tc/transact conn
-      [{:db/id [:item/id (:item-id item)]
-        :item/description (str "Updated description " (.nextInt rng 100000))}])))
+    (transact! conn state
+               [{:db/id [:item/id (:item-id item)]
+                 :item/description (str "Updated description " (.nextInt rng 100000))}])))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 11: get-comment (2%)
@@ -687,10 +692,10 @@
                 :limit 10})]
     (when (seq unanswered)
       (let [comment-id (first (nth unanswered (.nextInt rng (count unanswered))))]
-        (tc/transact conn
-                     [{:db/id [:item-comment/id comment-id]
-                       :item-comment/response "Thanks for asking!"
-                       :item-comment/updated (now-instant)}])))))
+        (transact! conn state
+                   [{:db/id [:item-comment/id comment-id]
+                     :item-comment/response "Thanks for asking!"
+                     :item-comment/updated (now-instant)}])))))
 
 ;; ---------------------------------------------------------------------------
 ;; Procedure 13: check-winning-bid (periodic)
@@ -717,7 +722,7 @@
                             {:db/id [:item/id item-id]
                              :item/status :waiting-for-purchase})
                           expired)]
-        (tc/transact conn tx-data)
+        (transact! conn state tx-data)
         ;; move items from open to waiting
         (doseq [[item-id seller-id end] expired]
           (let [sample (->ItemSample item-id seller-id (instant->millis end))]
@@ -734,11 +739,11 @@
   ;; close up to 10 waiting items
   (dotimes [_ 10]
     (when-let [item (pool-take! (:items-waiting state))]
-      (tc/transact conn
-        [{:db/id [:item/id (:item-id item)]
-          :item/status :closed}
-         {:item-purchase/id (next-id (:purchase-counter state))
-          :item-purchase/item-id [:item/id (:item-id item)]
-          :item-purchase/user-id [:user/id (:seller-id item)]
-          :item-purchase/date (now-instant)}])
+      (transact! conn state
+                 [{:db/id [:item/id (:item-id item)]
+                   :item/status :closed}
+                  {:item-purchase/id (next-id (:purchase-counter state))
+                   :item-purchase/item-id [:item/id (:item-id item)]
+                   :item-purchase/user-id [:user/id (:seller-id item)]
+                   :item-purchase/date (now-instant)}])
       (pool-add! (:items-closed state) item))))
