@@ -327,12 +327,16 @@ RustFS pressure: each flush writes one WAL object. The server finds new WAL data
 
 Inbox pressure: every query has an inbox of 256 batches (`inbox_capacity` in `src/incremental.rs`). The server sends each WAL batch to the inbox of every query. A query that falls 256 batches behind ends with `Incremental query fell behind`. A shorter interval makes more batches each second, so the inbox fills sooner. At about 5 batches a second, 256 batches is about 51 seconds of lag. At about 2 batches a second, it is about 128 seconds.
 
-These runs used 1,000 subscriptions, 5 transactions a second, 30 minutes of writes and 2 merger threads:
+These runs used 1,000 subscriptions, 5 transactions a second and 30 minutes of writes. The merger threads are the DBSP threads that merge query state in the background:
 
-| Flush interval | RustFS cores | Result | Catch-up p50 | Catch-up p95 |
-|---|---|---|---|---|
-| 100 microseconds | 0.25 | Failed, 801 queries fell behind | 3.4 s | 12.9 s |
-| 500 ms | 0.25 | Passed | 2.3 s | 4.9 s |
-| 100 ms | 2 | Passed | 0.8 s | 1.4 s |
+| Flush interval | Merger threads | RustFS cores | Result | Catch-up p50 | p95 | p99 | max |
+|---|---|---|---|---|---|---|---|
+| 100 microseconds | 2 | 0.25 | Failed, 801 queries fell behind | 3.4 s | 12.9 s | 45.5 s | 87.3 s |
+| 500 ms | 2 | 0.25 | Passed | 2.3 s | 4.9 s | 12.9 s | 28.8 s |
+| 500 ms | 6 | 0.25 | Passed | 2.4 s | 4.7 s | 16.9 s | 30.6 s |
+| 100 ms | 2 | 2 | Passed | 0.8 s | 1.4 s | 1.7 s | 4.5 s |
+| 500 ms | 6 | 2 | Passed | 1.0 s | 1.6 s | 1.8 s | 2.2 s |
 
-Do not make the flush interval small without checking RustFS first. During a run, look at the RustFS CPU in `containers.jsonl` and at `retry.rs` lines in `server.log`. If RustFS sits at its CPU quota, raise the quota or the flush interval. These numbers come from one 8-core machine.
+The RustFS CPU quota has the largest effect on lag. With 0.25 cores, RustFS ran at its quota for the whole run, and p95 was about 5 s with a long tail. With 2 cores, RustFS used about half of its quota, and p95 was about 1.5 s. Six merger threads instead of two did not change the lag. The 100 ms and 500 ms intervals behaved alike with 2 cores. The run that failed used both the 100 microsecond interval and the 0.25-core quota. We did not test 100 microseconds with 2 cores.
+
+Do not make the flush interval small without checking RustFS first. During a run, look at the RustFS CPU in `containers.jsonl` and at `retry.rs` lines in `server.log`. If RustFS sits at its CPU quota, raise the quota first. If it still sits at the quota, raise the flush interval. Each row is one run on one 8-core machine, so small differences are not reliable.
