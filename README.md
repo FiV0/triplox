@@ -83,7 +83,9 @@ Afterwards you connect with your favorite client.
 ### Incremental Queries
 
 Triplox supports [incremental queries](https://triplox.xyz/incremental-queries/overview/) and all the constructs available
-in the standard query engine, including `or`/`or-join`,`not`/`not-join`, predicates, functions and aggregates. (Recursive) rules are still on the TODO list as they require fix-point calculations via DBSP which I haven't touched yet.
+in the standard query engine, including `or`/`or-join`,`not`/`not-join`, predicates, functions and aggregates. (Recursive) rules are still on the TODO list as they require fix-point calculations via DBSP which I haven't touched yet. Also see
+[this post](https://triplox.xyz/blog/triplox-log-2-incremental-queries-in-triplox/) for an overview of how incremental queries work
+Triplox.
 
 ```clj
 (def conn (tc/connect "localhost" 5490))
